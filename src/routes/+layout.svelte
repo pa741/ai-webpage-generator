@@ -1,18 +1,17 @@
-<script>
-  import Header from './Header.svelte';
-  import Footer from './Footer.svelte';
-</script>
+<div class="app">
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 
-<Header />
+    <slot></slot>
 
-<main>
-  <slot></slot>
-<div>dasdad</div>
-</main>
-
-<Footer />
+</div>
 
 <style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
   main {
     flex: 1;
     display: flex;

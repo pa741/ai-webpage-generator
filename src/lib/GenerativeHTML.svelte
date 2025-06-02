@@ -1,13 +1,14 @@
 <script lang="ts">
+  import { page } from '$app/state';
+    import { GenerateHtml } from './AI/PageGenerator';
 
 interface Props {
 		description: string;
 		
 	}
 let {description} = $props()
-const route = window.location.pathname;
-const content = `<div> this is a test ${route}</div>`
-
+const route = page.url.pathname;
+let content = '';
 
 
 </script>
