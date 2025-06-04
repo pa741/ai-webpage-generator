@@ -1,5 +1,4 @@
 <script lang="ts">
-    import GenerativeHtml from "$lib/GenerativeHTML.svelte";
     let {data} = $props();
 
 </script>
