@@ -1,15 +1,10 @@
-import Cerebras from '@cerebras/cerebras_cloud_sdk';
-
+import Cerebras from "@cerebras/cerebras_cloud_sdk";
 const client = new Cerebras({
-    apiKey: "csk-epw35p4r3cy429jk24n28e9k2jek9n8n39n43ckv8dmpwymn", // This is the default and can be omitted
+  apiKey: "csk-epw35p4r3cy429jk24n28e9k2jek9n8n39n43ckv8dmpwymn"
+  // This is the default and can be omitted
 });
-
-
-export async function GenerateImageFromRoute(route: string) {}
-
-
-export async function GenerateHtml(route: string) {
-    const systemPrompt = `/no_think You are a highly specialized AI assistant. Your singular function is to act as an expert **Route-to-HTML Prompt Engineer**. You will receive a single URL route as input.
+async function GenerateHtml(route) {
+  const systemPrompt = `/no_think You are a highly specialized AI assistant. Your singular function is to act as an expert **Route-to-HTML Prompt Engineer**. You will receive a single URL route as input.
 
 Your mission is to:
 1.  **Interpret the provided URL route** to deduce the implicit subject matter, hierarchical position, and potential user intent for a webpage at that route.
@@ -72,31 +67,28 @@ Your generated prompt for the HTML-generating LLM *must* adhere to the following
 * **Actionability:** Every directive should translate directly into HTML structure or styling choices.
 * **No Examples in Your Output:** Your entire output should be the single, complete prompt for the HTML-generating LLM.
 
-Execute this task with precision. Your goal is to empower the subsequent HTML-generating LLM to create well-structured, Tailwind-styled, raw HTML content for the body of a webpage, based *only* on the logical interpretation of the provided URL route.`
-
-    let response = await client.chat.completions.create({
-        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: route }],
-        model: "llama-4-scout-17b-16e-instruct"
-    })
-    let description = (response.choices as any)[0]?.message.content as string;
-
-    return await RequestHtml(description);
-
-
+Execute this task with precision. Your goal is to empower the subsequent HTML-generating LLM to create well-structured, Tailwind-styled, raw HTML content for the body of a webpage, based *only* on the logical interpretation of the provided URL route.`;
+  let response = await client.chat.completions.create({
+    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: route }],
+    model: "llama-4-scout-17b-16e-instruct"
+  });
+  let description = response.choices[0]?.message.content;
+  return await RequestHtml(description);
 }
-async function RequestHtml(description: string) {
-    const systemPrompt = `/no_think `;
-
-    let response = await client.chat.completions.create({
-        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
-        model: "qwen-3-32b"
-    })
-    let html = (response.choices as any)[0]?.message.content as string;
-    let regex = /<think>.*<\/think>/g;
-
-    html = html.replaceAll(regex, "").trim();
-    html = html.replace(/<think>/g, "").replace(/<\/think>/g, "").trim();
-    html = html.replace("```html", "").replace(">```", "").replace(">\n```", "").trim();
-    html += "\n<!-- " + description + " -->";
-    return html;
-}1
+async function RequestHtml(description) {
+  const systemPrompt = `/no_think ${description}`;
+  let response = await client.chat.completions.create({
+    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
+    model: "qwen-3-32b"
+  });
+  let html = response.choices[0]?.message.content;
+  let regex = /<think>.*<\/think>/g;
+  html = html.replaceAll(regex, "").trim();
+  html = html.replace(/<think>/g, "").replace(/<\/think>/g, "").trim();
+  html = html.replace("```html", "").replace(">```", "").replace(">\n```", "").trim();
+  html += "\n<!-- " + description + " -->";
+  return html;
+}
+export {
+  GenerateHtml as G
+};
