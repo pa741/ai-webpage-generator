@@ -5,12 +5,15 @@
 // or use 'any' as a temporary workaround:
 // type PageServerLoad = any;
 
-import { GenerateHtml } from "$lib/AI/PageGenerator";
+import { GenerateHtml, GenerateImageFromRoute } from "$lib/AI/PageGenerator";
 
 export const load = async ({url}:any) => {
+	if(url.pathname.endsWith(".png") || url.pathname.endsWith(".jpg") || url.pathname.endsWith(".jpeg") || url.pathname.endsWith(".gif")) {
+		console.log("errroorrr")
 
+	}
     const html = await GenerateHtml(url.pathname);
-	console.log("Generated HTML:", html);
+	//console.log("Generated HTML:", html);
 	return {
 		html: html,
 	};

@@ -1,74 +1,8 @@
-import { p as push, k as push_element, m as pop_element, j as pop, F as FILENAME } from "../../chunks/index.js";
 import "clsx";
-_page[FILENAME] = "src/routes/+page.svelte";
-function _page($$payload, $$props) {
-  push(_page);
-  $$payload.out += `<div class="app">`;
-  push_element($$payload, "div", 4, 0);
-  $$payload.out += `<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"><\/script> <div class="flex flex-col min-h-screen">`;
-  push_element($$payload, "div", 6, 2);
-  $$payload.out += `<main class="flex-1 flex flex-col p-4 w-full max-w-2xl mx-auto box-border">`;
-  push_element($$payload, "main", 7, 4);
-  $$payload.out += `<div class="bg-white shadow-md rounded-lg p-6 mb-6">`;
-  push_element($$payload, "div", 12, 6);
-  $$payload.out += `<h1 class="text-2xl font-bold mb-4">`;
-  push_element($$payload, "h1", 13, 8);
-  $$payload.out += `This Webpage is infinite</h1>`;
-  pop_element();
-  $$payload.out += ` <p class="text-gray-700">`;
-  push_element($$payload, "p", 14, 8);
-  $$payload.out += `There are no 404 urls. Add whatever route you see fit. It will be
-          created</p>`;
-  pop_element();
-  $$payload.out += `</div>`;
-  pop_element();
-  $$payload.out += ` <div class="bg-white shadow-md rounded-lg p-6 mb-6">`;
-  push_element($$payload, "div", 19, 6);
-  $$payload.out += `<h2 class="text-xl font-semibold mb-2">`;
-  push_element($$payload, "h2", 20, 8);
-  $$payload.out += `Example Routes</h2>`;
-  pop_element();
-  $$payload.out += ` <ul class="list-disc pl-5 text-gray-700">`;
-  push_element($$payload, "ul", 21, 8);
-  $$payload.out += `<li>`;
-  push_element($$payload, "li", 22, 10);
-  $$payload.out += `<a href="/about" class="text-blue-500 hover:underline">`;
-  push_element($$payload, "a", 23, 12);
-  $$payload.out += `/about</a>`;
-  pop_element();
-  $$payload.out += `</li>`;
-  pop_element();
-  $$payload.out += ` <li>`;
-  push_element($$payload, "li", 25, 10);
-  $$payload.out += `<a href="/contact" class="text-blue-500 hover:underline">`;
-  push_element($$payload, "a", 26, 12);
-  $$payload.out += `/contact</a>`;
-  pop_element();
-  $$payload.out += `</li>`;
-  pop_element();
-  $$payload.out += ` <li>`;
-  push_element($$payload, "li", 29, 10);
-  $$payload.out += `<a href="/blog" class="text-blue-500 hover:underline">`;
-  push_element($$payload, "a", 30, 12);
-  $$payload.out += `/blog</a>`;
-  pop_element();
-  $$payload.out += `</li>`;
-  pop_element();
-  $$payload.out += `</ul>`;
-  pop_element();
-  $$payload.out += `</div>`;
-  pop_element();
-  $$payload.out += `</main>`;
-  pop_element();
-  $$payload.out += `</div>`;
-  pop_element();
-  $$payload.out += `</div>`;
-  pop_element();
-  pop();
+function _page($$payload) {
+  $$payload.out += `<div class="app"><script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"><\/script> <div class="flex flex-col min-h-screen"><main class="flex-1 flex flex-col p-4 w-full max-w-2xl mx-auto box-border"><div class="bg-white shadow-md rounded-lg p-6 mb-6"><h1 class="text-2xl font-bold mb-4">This Webpage is infinite</h1> <p class="text-gray-700">There are no 404 urls. Add whatever route you see fit. It will be
+          created</p></div> <div class="bg-white shadow-md rounded-lg p-6 mb-6"><h2 class="text-xl font-semibold mb-2">Example Routes</h2> <ul class="list-disc pl-5 text-gray-700"><li><a href="/about" class="text-blue-500 hover:underline">/about</a></li> <li><a href="/contact" class="text-blue-500 hover:underline">/contact</a></li> <li><a href="/blog" class="text-blue-500 hover:underline">/blog</a></li></ul></div></main></div></div>`;
 }
-_page.render = function() {
-  throw new Error("Component.render(...) is no longer valid in Svelte 5. See https://svelte.dev/docs/svelte/v5-migration-guide#Components-are-no-longer-classes for more information");
-};
 export {
   _page as default
 };

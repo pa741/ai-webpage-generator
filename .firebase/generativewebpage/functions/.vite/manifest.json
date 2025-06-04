@@ -17,7 +17,6 @@
     "name": "client",
     "imports": [
       "_equality.js",
-      "_index.js",
       "_exports.js"
     ]
   },
@@ -29,8 +28,7 @@
     "file": "chunks/exports.js",
     "name": "exports",
     "imports": [
-      "_equality.js",
-      "_index.js"
+      "_equality.js"
     ]
   },
   "_index.js": {
@@ -42,13 +40,11 @@
     "name": "internal",
     "imports": [
       "_equality.js",
-      "_index.js",
-      "_utils.js"
+      "_index.js"
+    ],
+    "dynamicImports": [
+      "src/hooks.server.ts"
     ]
-  },
-  "_utils.js": {
-    "file": "chunks/utils.js",
-    "name": "utils"
   },
   "node_modules/@sveltejs/kit/src/runtime/components/svelte-5/error.svelte": {
     "file": "entries/fallbacks/error.svelte.js",
@@ -70,6 +66,15 @@
       "_exports.js"
     ]
   },
+  "src/hooks.server.ts": {
+    "file": "chunks/hooks.server.js",
+    "name": "hooks.server",
+    "src": "src/hooks.server.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_PageGenerator.js"
+    ]
+  },
   "src/routes/+layout.svelte": {
     "file": "entries/pages/_layout.svelte.js",
     "name": "entries/pages/_layout.svelte",
@@ -86,10 +91,7 @@
     "file": "entries/pages/_page.svelte.js",
     "name": "entries/pages/_page.svelte",
     "src": "src/routes/+page.svelte",
-    "isEntry": true,
-    "imports": [
-      "_index.js"
-    ]
+    "isEntry": true
   },
   "src/routes/[...slug]/+page.server.ts": {
     "file": "entries/pages/_...slug_/_page.server.ts.js",
@@ -107,7 +109,6 @@
     "isEntry": true,
     "imports": [
       "_index.js",
-      "_utils.js",
       "_client.js",
       "_PageGenerator.js"
     ],
