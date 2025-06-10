@@ -22,9 +22,11 @@
   },
   "dependencies": {
     "@cerebras/cerebras_cloud_sdk": "^1.35.0",
+    "@mistralai/mistralai": "^1.7.1",
     "@runware/sdk-js": "^1.1.40",
     "firebase": "^11.8.1",
     "groq-sdk": "^0.23.0",
-    "marked": "^15.0.12"
+    "marked": "^15.0.12",
+    "openai": "^5.2.0"
   }
 }

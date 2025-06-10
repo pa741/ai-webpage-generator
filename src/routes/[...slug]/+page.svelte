@@ -1,17 +1,24 @@
 <script lang="ts">
+    import { browser } from "$app/environment";
+    import { page } from "$app/stores";
   import { marked } from "marked";
   let { data } = $props();
   import { onMount } from "svelte";
 
   $effect(() => {
+    if(!browser) return;
+    const currentUrl = $page.url.pathname;
+
+
+    
     const content = document.querySelectorAll("text-content");
     content.forEach(async (el) => {
       (el as any)._content = "";
 
       let description = el.getAttribute("description") ?? "<no description>";
       const encodedDescription = encodeURIComponent(description);
-
-      const response = await fetch(window.location.pathname + "/stream", {
+      let url = window.location.origin + window.location.pathname;
+      const response = await fetch(url + "stream", {
         headers: {
           Accept: "text/event-stream",
           Description: encodedDescription,

@@ -3,12 +3,24 @@ import Cerebras from '@cerebras/cerebras_cloud_sdk';
 import type { ChatCompletion } from '@cerebras/cerebras_cloud_sdk/resources.mjs';
 import { Runware } from '@runware/sdk-js';
 import Groq from "groq-sdk";
+import OpenAI from 'openai';
 
 const client = new Cerebras({
     apiKey: "csk-epw35p4r3cy429jk24n28e9k2jek9n8n39n43ckv8dmpwymn",
 });
+
+const router = new OpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: "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",
+});
+
+
 //groq key:
 //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 
+
+//codestral
+//AWjJBc0EWOkqk6ChAUtfLyZjqKc7iaeT
+
 
 const groq = new Groq({
     apiKey: "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"
@@ -68,7 +80,7 @@ Be Plausible: The description should logically follow from the information in th
 Be Creative but Grounded: Fill in reasonable details that aren't explicitly stated but make sense given the context.
 Focus on Visuals: Describe what one would see.
 Do NOT describe the URL string itself or the act of parsing. Describe the image.
-Ignore technical parts of the URL like https://, www., .com, or query parameters unless they clearly contribute to the image's content description.
+
 Example Input URL 1:
 /images/landscapes/mountains/snowy_peaks_sunrise_alps.jpg
 
@@ -120,7 +132,6 @@ export async function GenerateImageFromRoute(route: string) {
         return "";
     }
     trackAIInteraction('image_generation_request', 'runware:100@1');
-    console.log("Image generated successfully for route:", route, "Image size:", response[0].imageBase64Data.length);
     return response[0].imageBase64Data;
 }
 
@@ -128,7 +139,12 @@ export async function* GenerateContentForDescription(description: string) {
     const systemPrompt = `You are a professional, versatile, and creative website content creator. Your primary purpose is to generate high-quality, engaging, and well-structured text content based on the specific context and requirements provided by the user. The generated content should be ready for publication on a website.
     Your main goal is to take a user's general description and transform it into a specific piece of website content. You must adhere strictly to all instructions regarding the content type, tone, audience, and formatting.
     Your output should be plain text, without any HTML tags or formatting. The content should be structured in a way that is easy to read and understand, with clear headings, subheadings, and paragraphs where appropriate.
-    Do not use markdown, HTML, or any other formatting language. The content should be ready to be copied and pasted directly into a website's content management system (CMS) without any additional formatting.
+    You may use markdown syntax for basic formatting and linking to resources.
+    When linking to resources, use relative URLs (e.g., /about-us, /contact) without any domain or protocol. The link text itself should be descriptive of the content it links to.
+    Do not include any external links or references to specific websites, products, or services unless explicitly requested by the user.
+    Do not include any placeholders or comments in the output. The content should be complete and ready for publication.
+    Do not include images, videos, or any other media in the output. The content should be purely text-based.
+    Your output should be concise, relevant, and directly address the user's request. Avoid unnecessary fluff or filler content, unless specified by the user.
     You are now ready to receive the user's request. Provide the best possible content based on the inputs.`;
 
     trackAIInteraction('content_generation_request', 'llama-4-maverick');
@@ -179,6 +195,7 @@ export async function GenerateHtml(route: string, referer?: string | null) {
 
     let response = await client.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: JSON.stringify(input) }],
+        //model: "qwen-3-32b"
         model: "llama-4-scout-17b-16e-instruct"
     })
     let description = (response.choices as any)[0]?.message.content as string;
@@ -207,8 +224,20 @@ Content Integration:
     try {
         let response = await client.chat.completions.create({
             messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
+            //model: "llama-4-scout-17b-16e-instruct"
             model: "qwen-3-32b"
         })
+        //let response = await router.chat.completions.create({
+        //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
+        //    //model: "llama-4-scout-17b-16e-instruct"
+        //    model: "thudm/glm-4-32b:free",
+        //})
+        //let response = await groq.chat.completions.create({
+        //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
+        //    model: "qwen-qwq-32b",
+        //    reasoning_format: "hidden"
+        //
+        //})
         if (!response.choices || (response.choices as any).length === 0 || !(response.choices as any)[0]?.message.content) {
             trackWebsiteGeneration(description, false);
             return "<!-- Error generating HTML: No content returned -->";
@@ -222,7 +251,7 @@ Content Integration:
         html = html.replaceAll(regex, "").trim();
         html = html.replace(/<think>/g, "").replace(/<\/think>/g, "").trim();
         html = html.replace("```html", "").replace(">```", "").replace(">\n```", "").trim();
-        html += "\n<!-- " + description + " -->";
+        //html += "\n<!-- " + description + " -->";
         return html;
     } catch (error) {
         trackWebsiteGeneration(description, false);

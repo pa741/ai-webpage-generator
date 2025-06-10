@@ -56,7 +56,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     }
 
     let pathname = event.url.pathname;
-    if (pathname.endsWith('.png') || pathname.endsWith('.jpg') || pathname.endsWith('.jpeg') || pathname.endsWith('.gif') || pathname.endsWith('.webp') || pathname.endsWith('.avif')) {
+    if (pathname.endsWith('.png') || pathname.endsWith('.jpg') || pathname.endsWith('.jpeg') || pathname.endsWith('.gif') || pathname.endsWith('.webp') || pathname.endsWith('.avif') || pathname.endsWith('.svg')) {
         // Not favicon
         if (pathname === '/favicon.png' || pathname === '/favicon.ico') {
             return new Response(null, {
@@ -79,6 +79,6 @@ export const handle: Handle = async ({ event, resolve }) => {
     }
 
     const response = await resolve(event);
-    response.headers.set('Cache-Control', 'public, max-age=3600, immutable');
+    response.headers.set('Cache-Control', 'public, max-age=60, immutable');
     return response;
 };
