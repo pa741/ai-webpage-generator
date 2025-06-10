@@ -8,7 +8,7 @@ import OpenAI from 'openai';
 const client = new Cerebras({
     apiKey: "csk-epw35p4r3cy429jk24n28e9k2jek9n8n39n43ckv8dmpwymn",
 });
-
+//chutes fingerprint 8OiyKsao5qxS3bBh9dnUzVQujNXYtc6I
 const router = new OpenAI({
     baseURL: "https://openrouter.ai/api/v1",
     apiKey: "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",
