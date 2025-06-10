@@ -122,6 +122,7 @@ export async function GenerateImageFromRoute(route: string) {
         CFGScale: 1,
         steps: 1,
         outputType: 'base64Data',
+        outputFormat: 'PNG',
         width: 1024,
         height: 1024,
     });
