@@ -1,14 +1,24 @@
 import { trackAIInteraction, trackCustomEvent, trackError, trackWebsiteGeneration } from '$lib/analytics';
 import Cerebras from '@cerebras/cerebras_cloud_sdk';
+import type { ChatCompletion } from '@cerebras/cerebras_cloud_sdk/resources.mjs';
 import { Runware } from '@runware/sdk-js';
-import { run } from 'svelte/legacy';
+import Groq from "groq-sdk";
 
 const client = new Cerebras({
-    apiKey: "csk-epw35p4r3cy429jk24n28e9k2jek9n8n39n43ckv8dmpwymn", // This is the default and can be omitted
+    apiKey: "csk-epw35p4r3cy429jk24n28e9k2jek9n8n39n43ckv8dmpwymn",
 });
+//groq key:
+//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 
+
+const groq = new Groq({
+    apiKey: "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"
+
+});
+
+
 const runware = new Runware({ apiKey: "Xi6YFCP8Db33aym3bW7cE1ZPOsR5Avnw" });
 
-export async function GenerateHomePage(){
+export async function GenerateHomePage() {
 
     const prompt = `
     This webpage is a homepage for a modern, innovative, and user-friendly website. It should have a clean, contemporary design with a focus on usability and aesthetics.
@@ -114,10 +124,40 @@ export async function GenerateImageFromRoute(route: string) {
     return response[0].imageBase64Data;
 }
 
+export async function* GenerateContentForDescription(description: string) {
+    const systemPrompt = `You are a professional, versatile, and creative website content creator. Your primary purpose is to generate high-quality, engaging, and well-structured text content based on the specific context and requirements provided by the user. The generated content should be ready for publication on a website.
+    Your main goal is to take a user's general description and transform it into a specific piece of website content. You must adhere strictly to all instructions regarding the content type, tone, audience, and formatting.
+    Your output should be plain text, without any HTML tags or formatting. The content should be structured in a way that is easy to read and understand, with clear headings, subheadings, and paragraphs where appropriate.
+    Do not use markdown, HTML, or any other formatting language. The content should be ready to be copied and pasted directly into a website's content management system (CMS) without any additional formatting.
+    You are now ready to receive the user's request. Provide the best possible content based on the inputs.`;
 
-export async function GenerateHtml(route: string) {
+    trackAIInteraction('content_generation_request', 'llama-4-maverick');
+    //llama3.1-8b	
+
+    let stream = await groq.chat.completions.create({
+        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
+        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+        stream: true
+    })
+
+    for await (const chunk of stream) {
+        let choices = chunk.choices as any[];
+        let delta = choices[0].delta as any;
+        if (delta && delta.content) {
+            yield delta.content as string;
+        }
+    }
+
+
+}
+
+
+
+
+export async function GenerateHtml(route: string, referer?: string | null) {
 
     trackAIInteraction('website_generation_request', 'llama-4');
+    console.log("Generating HTML for route:", route, "Referer:", referer);
 
 
     const systemPrompt = `/no_think You are a highly imaginative Senior UX/UI Designer and Content Strategist AI. Your task is to take only a given relative URL route and generate a concise, general description of the ideal version of that webpage. 
@@ -126,9 +166,19 @@ export async function GenerateHtml(route: string) {
     Although you will only receive the URL, you must internally infer a plausible context (website type, hypothetical brand, audience, page purpose) to inform your description.
     Do not explicitly state this inferred context in your output. Your description of the webpage should naturally flow from these internal assumptions.
     The more specific the URL route, the more targeted your description can be. For very generic routes, you may need to internally assume a common archetype.
-    Include the given route in your response as a comment at the end.`
+    Include the given route in your response as a comment at the end.
+    Ocassionaly you may also receive a referer URL, which can provide additional context about the page's purpose or audience. Use this information to enhance your description, but do not include it in the output.
+    `
+    let input = {
+        route
+    } as any;
+    if (referer) {
+        input['referer'] = referer;
+    }
+
+
     let response = await client.chat.completions.create({
-        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: route }],
+        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: JSON.stringify(input) }],
         model: "llama-4-scout-17b-16e-instruct"
     })
     let description = (response.choices as any)[0]?.message.content as string;
@@ -143,18 +193,17 @@ async function RequestHtml(description: string) {
     const systemPrompt = `/no_think You are an expert web developer specializing in modern and innovative UI/UX design, with strong proficiency in Tailwind CSS and the ability to integrate custom CSS and JavaScript when necessary for enhanced functionality or unique visual effects.
 Task: Generate a single, raw HTML fragment (no <html>, <head>, or <body> tags, just the content that would go inside the <body>) based on the provided webpage description.
 Key Requirements:
-HTML Fragment: The output must be a raw HTML fragment.
-Tailwind CSS First: Primarily use Tailwind CSS classes for all styling. Ensure the classes are up-to-date and effectively implement the design.
-Inline CSS & JavaScript (Optional but Permitted):
-If custom styling beyond Tailwind's capabilities is needed to achieve a modern and innovative look, you can include CSS within <style> tags directly in the HTML fragment.
-If specific interactive elements or animations are required that cannot be achieved with Tailwind CSS alone, you can include JavaScript within <script> tags directly in the HTML fragment. Aim for vanilla JavaScript or very lightweight utility functions if possible, to keep the fragment self-contained.
-Modern & Innovative Design: The visual output should be sleek, contemporary, and incorporate creative design elements. Think clean lines, good use of whitespace, subtle animations or transitions, and a generally fresh aesthetic. Avoid outdated or generic styles.
-Responsive: The HTML structure and styling (Tailwind and any custom CSS) should ensure the fragment is responsive and looks good on various screen sizes (mobile, tablet, desktop).
-Semantic HTML (where appropriate): Use semantic HTML tags where they make sense for accessibility and structure (e.g., <section>, <article>, <nav>, <aside>), but prioritize the visual and structural integrity of the fragment.
+- HTML Fragment: The output must be a raw HTML fragment.
+- Tailwind CSS First: Primarily use Tailwind CSS classes for all styling. Ensure the classes are up-to-date and effectively implement the design.
+- Inline CSS & JavaScript (Optional but Permitted):
+- If custom styling beyond Tailwind's capabilities is needed to achieve a modern and innovative look, you can include CSS within <style> tags directly in the HTML fragment. If specific interactive elements or animations are required that cannot be achieved with Tailwind CSS alone, you can include JavaScript within <script> tags directly in the HTML fragment. Aim for vanilla JavaScript or very lightweight utility functions if possible, to keep the fragment self-contained.
+- Modern & Innovative Design: The visual output should be sleek, contemporary, and incorporate creative design elements. Think clean lines, good use of whitespace, subtle animations or transitions, and a generally fresh aesthetic. Avoid outdated or generic styles.
+- Responsive: The HTML structure and styling (Tailwind and any custom CSS) should ensure the fragment is responsive and looks good on various screen sizes (mobile, tablet, desktop).
+- Semantic HTML (where appropriate): Use semantic HTML tags where they make sense for accessibility and structure (e.g., <section>, <article>, <nav>, <aside>), but prioritize the visual and structural integrity of the fragment.
 Content Integration:
-Directly integrate descriptive text based on the input description. Do not use generic placeholder text like "Lorem ipsum" or "Placeholder text." Write concise, meaningful content as if it were for the final webpage.
-For images, use made-up, descriptive relative URLs. The path should be logical and the filename should describe the image content, using hyphens for spaces (e.g., /images/team/lead-designer-portrait.jpg, /content/features/data-visualization-graph.svg).
-For links (<a> tags), use made-up, descriptive relative URLs (e.g., /services/detail/custom-solutions, /about-us/our-mission). The link text itself should also be descriptive.`;
+- For large blocks of text, use <text-content> tags to indicate where the text should be placed, This tag has description as a mandatory attribute. This is a placeholder for the actual content that will be dynamically inserted later. Ensure the tag has a description attribute that describes the content with a brief summary of what the text should convey, its purpose, any key points it should cover, writting style, **how long it should be** and any relevant context. Everything referenced in the description should have appropriate context.
+- For images, use made-up, descriptive relative URLs. The path should be logical and the filename should describe the image content, using hyphens for spaces (e.g., /images/team/lead-designer-portrait.jpg, /content/features/data-visualization-graph.png).
+- For links (<a> tags), use made-up, descriptive relative URLs (e.g., /services/detail/custom-solutions, /about-us/our-mission). The link text itself should also be descriptive.`;
     try {
         let response = await client.chat.completions.create({
             messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],

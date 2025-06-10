@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { page } from '$app/stores';
-  import { browser } from '$app/environment';
-  import { trackPageView } from '$lib/analytics';
-  import '../lib/firebase'; // Initialize Firebase
+  import { onMount } from "svelte";
+  import { page } from "$app/stores";
+  import { browser } from "$app/environment";
+  import { trackPageView } from "$lib/analytics";
+  import "../lib/firebase"; // Initialize Firebase
 
   // Track page views when route changes
   $: if (browser && $page.url) {
@@ -12,10 +12,10 @@
 </script>
 
 <div class="app">
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
-    <slot></slot>
-
+  <slot></slot>
 </div>
 
 <style>
