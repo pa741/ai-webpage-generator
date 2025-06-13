@@ -221,12 +221,19 @@ Key Requirements:
 Content Integration:
 - For large blocks of text, use <text-content> tags to indicate where the text should be placed, This tag has description as a mandatory attribute. This is a placeholder for the actual content that will be dynamically inserted later. Ensure the tag has a description attribute that describes the content with a brief summary of what the text should convey, its purpose, any key points it should cover, writting style, **how long it should be** and any relevant context. Everything referenced in the description should have appropriate context.
 - For images, use made-up, descriptive relative URLs. The path should be logical and the filename should describe the image content, using hyphens for spaces (e.g., /images/team/lead-designer-portrait.jpg, /content/features/data-visualization-graph.png).
-- For links (<a> tags), use made-up, descriptive relative URLs (e.g., /services/detail/custom-solutions, /about-us/our-mission). The link text itself should also be descriptive.`;
+- For links (<a> tags), use made-up, descriptive relative URLs (e.g., /services/detail/custom-solutions, /about-us/our-mission). The link text itself should also be descriptive.
+Output Formatting Rules:
+- The response MUST be only the HTML code.
+- Do NOT include any explanations, introductory text, or concluding remarks.
+- Do NOT wrap the HTML in Markdown code blocks (i.e., no \`\`\`html or \`\`\`).
+- The output must start directly with the first HTML tag and end with the last one.
+`;
     try {
         let response = await client.chat.completions.create({
             messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
             //model: "llama-4-scout-17b-16e-instruct"
-            model: "qwen-3-32b"
+            model: "qwen-3-32b",
+            
         })
         //let response = await router.chat.completions.create({
         //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
@@ -250,8 +257,7 @@ Content Integration:
         let regex = /<think>.*<\/think>/g;
 
         html = html.replaceAll(regex, "").trim();
-        html = html.replace(/<think>/g, "").replace(/<\/think>/g, "").trim();
-        html = html.replace("```html", "").replace(">```", "").replace(">\n```", "").trim();
+        //html = html.replace(/<think>/g, "").replace(/<\/think>/g, "").trim();
         //html += "\n<!-- " + description + " -->";
         return html;
     } catch (error) {
