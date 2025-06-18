@@ -1,6 +1,5 @@
 import { logEvent, type Analytics } from 'firebase/analytics';
 import { analytics } from './firebase';
-
 // Custom event types for type safety
 export interface CustomEventParams {
   event_category?: string;

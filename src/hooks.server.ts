@@ -1,6 +1,6 @@
 import { GenerateContentForDescription, GenerateImageFromRoute } from '$lib/AI/PageGenerator';
-import { trackCustomEvent } from '../lib/analytics';
-import { db, collection, addDoc, serverTimestamp } from '../lib/firebase';
+import { logServerSideEvent } from '$lib/server_analytics';
+import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
 import type { Handle, RequestEvent } from '@sveltejs/kit'; // Ensure this type import is present or add it
 
 async function handleImageRequest(event: RequestEvent, pathname: string): Promise<Response> {
@@ -49,7 +49,7 @@ async function handleImageRequest(event: RequestEvent, pathname: string): Promis
 
   const userAgent = event.request.headers.get('user-agent') || 'unknown';
   const referer = event.request.headers.get('referer') || 'unknown';
-  trackCustomEvent('image_viewed', { event_category: 'engagement', event_label: pathname, custom_parameter: 'image_request', user_agent: userAgent, referer: referer });
+  logServerSideEvent('image_viewed', { event_category: 'engagement', event_label: pathname, custom_parameter: 'image_request', user_agent: userAgent, page_referrer: referer });
   let imageBase64 = await GenerateImageFromRoute(pathname);
   const imageBuffer = Buffer.from(imageBase64, 'base64');
   console.log("Image buffer size:", imageBuffer.length);
@@ -57,7 +57,8 @@ async function handleImageRequest(event: RequestEvent, pathname: string): Promis
       status: 200,
       headers: {
           'Content-Type': 'image/png',
-          'Cache-Control': 'public, max-age=3600, immutable'
+          'Cache-Control': 'public, max-age=3600, immutable',
+          'X-Robots-Tag': 'noindex, nofollow',
       }
   });
 }
@@ -70,10 +71,11 @@ export const handle: Handle = async ({ event, resolve }) => {
             status: 405, // Method Not Allowed
             headers: {
                 'Allow': 'GET',
-                'Content-Type': 'text/plain'
+                'Content-Type': 'text/plain',
             }
         });
     }
+
     let isEventSource = event.request.headers.get('accept')?.includes('text/event-stream');
     console.log("isEventSource:", isEventSource);
     if (isEventSource) {
@@ -111,7 +113,8 @@ export const handle: Handle = async ({ event, resolve }) => {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': '*',
+                'X-Robots-Tag': 'noindex, nofollow', // Prevent indexing of this page
             }
         });
     }
@@ -123,7 +126,8 @@ export const handle: Handle = async ({ event, resolve }) => {
             return new Response(null, {
                 status: 204,
                 headers: {
-                    'Cache-Control': 'public, max-age=3600, immutable'
+                    'Cache-Control': 'public, max-age=3600, immutable',
+                    "X-Robots-Tag": "noindex, nofollow",
                 }
             });
         }
@@ -132,5 +136,6 @@ export const handle: Handle = async ({ event, resolve }) => {
 
     const response = await resolve(event);
     response.headers.set('Cache-Control', 'public, max-age=60, immutable');
+    response.headers.set('X-Robots-Tag', 'noindex, nofollow'); // Prevent indexing of this page
     return response;
 };
