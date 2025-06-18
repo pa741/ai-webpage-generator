@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAnalytics, type Analytics, isSupported } from 'firebase/analytics';
+import { getFirestore, collection, addDoc, serverTimestamp, type Timestamp } from 'firebase/firestore';
 import { browser } from '$app/environment';
 import {
   PUBLIC_FIREBASE_API_KEY,
@@ -24,6 +25,8 @@ const firebaseConfig = {
 
 // Initialize Firebase
 export const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app);
+export { collection, addDoc, serverTimestamp, type Timestamp };
 
 // Initialize Analytics and get a reference to the service
 export let analytics: Analytics | null = null;
