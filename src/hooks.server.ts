@@ -1,4 +1,5 @@
 import { GenerateContentForDescription, GenerateImageFromRoute } from '$lib/AI/PageGenerator';
+import { PRIVATE_TURNSTILE_SECRET_KEY } from '$env/static/private';
 import { logServerSideEvent } from '$lib/server_analytics';
 import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
 import type { Handle, RequestEvent } from '@sveltejs/kit'; // Ensure this type import is present or add it
@@ -63,7 +64,87 @@ async function handleImageRequest(event: RequestEvent, pathname: string): Promis
   });
 }
 
+
+const validTurnstileValidation = async (event: RequestEvent):Promise<boolean> => {
+    // Check if the request has a valid Turnstile token
+    const turnstileToken = event.request.headers.get('turnstile-token') || event.cookies.get('turnstile-token');
+    const clearanceCookie = event.cookies.get('cf_clearance');
+    if (clearanceCookie) {
+        console.log('Clearance cookie found, skipping Turnstile validation');
+        return true; // Skip validation if clearance cookie is present
+    }
+
+
+    if (!turnstileToken) {
+        console.warn('Turnstile token is missing');
+        return false;
+    }
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        secret: PRIVATE_TURNSTILE_SECRET_KEY,
+        response: turnstileToken,
+      }),
+    });
+    if (!response.ok) {
+        console.error('Turnstile verification failed:', response.statusText);
+        return false;
+    }
+    const data = await response.json();
+
+    if (!data.success) {
+        console.warn('Turnstile verification failed:', data['error-codes']);
+        return false;
+    }
+    console.log('Turnstile verification successful');
+
+    event.cookies.delete('turnstile-token', { path: '/' }); // Delete the token cookie after successful verification
+
+    return true;
+
+
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
+
+
+    // check for bot in user-agent
+    const userAgent = event.request.headers.get('user-agent') || '';
+    if (!userAgent) {
+        // Block requests with no user-agent
+        logServerSideEvent('blocked_access', { event_category: 'security', event_label: 'no_user_agent', user_agent: 'empty' });
+        return new Response('User-Agent header is required', {
+            status: 403, // Forbidden
+            headers: {
+                'Content-Type': 'text/plain',
+                'X-Robots-Tag': 'noindex, nofollow',
+            }
+        });
+    }
+
+
+
+    const isBot = /bot|crawl|spider|slurp|mediapartners/i.test(userAgent);
+    //allow DiscordBot
+    const isDiscordBot = /Discordbot/i.test(userAgent);
+    console.log("User-Agent:", userAgent);
+    console.log("Is Bot:", isBot);
+    if (isBot && !isDiscordBot) {
+        // Log bot access
+        logServerSideEvent('bot_access', { event_category: 'engagement', event_label: event.url.pathname, user_agent: userAgent });
+        return new Response(null, {
+            status: 204, // No Content
+            headers: {
+                'Cache-Control': 'public, max-age=3600, immutable',
+                'X-Robots-Tag': 'noindex, nofollow',
+            }
+        });
+    }
+
+
+
+
     let isGet = event.request.method === 'GET';
     if (!isGet) {
         // Only handle GET requests
