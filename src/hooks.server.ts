@@ -108,6 +108,18 @@ const validTurnstileValidation = async (event: RequestEvent):Promise<boolean> =>
 
 export const handle: Handle = async ({ event, resolve }) => {
 
+    // check for Turnstile validation
+    const isTurnstileValid = await validTurnstileValidation(event);
+    if (!isTurnstileValid) {
+        logServerSideEvent('blocked_access', { event_category: 'security', event_label: 'invalid_turnstile', user_agent: event.request.headers.get('user-agent') || 'unknown' });
+        return new Response('Invalid Turnstile token', {
+            status: 403, // Forbidden
+            headers: {
+                'Content-Type': 'text/plain',
+                'X-Robots-Tag': 'noindex, nofollow',
+            }
+        });
+    }
 
     // check for bot in user-agent
     const userAgent = event.request.headers.get('user-agent') || '';
