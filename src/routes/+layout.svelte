@@ -11,15 +11,16 @@
       trackPageView(page.url.pathname, page.url.href);
     }
   });
-
-
 </script>
 
-<div class="app">
+{#if browser}
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
-	{@render children()}
+{/if}
+
+<div class="app">
+  {@render children()}
 </div>
 
 <style>
@@ -28,4 +29,4 @@
     flex-direction: column;
     min-height: 100vh;
   }
-  </style>
+</style>

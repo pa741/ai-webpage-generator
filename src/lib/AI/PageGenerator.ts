@@ -223,7 +223,8 @@ Output Formatting Rules:
         let response = await client.chat.completions.create({
             messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
             //model: "llama-4-scout-17b-16e-instruct"
-            model: "qwen-3-32b",
+            //model: "qwen-3-32b",
+            model: "qwen-3-235b-a22b",
             
         })
         //let response = await router.chat.completions.create({

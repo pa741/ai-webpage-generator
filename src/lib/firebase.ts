@@ -9,9 +9,13 @@ import {
   PUBLIC_FIREBASE_STORAGE_BUCKET,
   PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   PUBLIC_FIREBASE_APP_ID,
-  PUBLIC_FIREBASE_MEASUREMENT_ID
+  PUBLIC_FIREBASE_MEASUREMENT_ID,
+  PUBLIC_TURNSTILE_SITE_KEY
 } from '$env/static/public';
-
+import {
+  CloudflareProviderOptions,
+} from '@cloudflare/turnstile-firebase-app-check';
+import { CustomProvider, initializeAppCheck } from 'firebase/app-check';
 // Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: PUBLIC_FIREBASE_API_KEY,
@@ -22,9 +26,23 @@ const firebaseConfig = {
   appId: PUBLIC_FIREBASE_APP_ID,
   measurementId: PUBLIC_FIREBASE_MEASUREMENT_ID
 };
+const HTTP_ENDPOINT = 'https://europe-west2-generativewebpage.cloudfunctions.net/ext-cloudflare-turnstile-app-check-provider-tokenExchange';
 
-// Initialize Firebase
 export const app = initializeApp(firebaseConfig);
+let cpo: CloudflareProviderOptions | undefined = undefined;
+if (browser) {
+
+  cpo = new CloudflareProviderOptions(HTTP_ENDPOINT, PUBLIC_TURNSTILE_SITE_KEY);
+  const provider = new CustomProvider(cpo);
+
+  initializeAppCheck(app, { provider });
+
+
+}
+export { cpo };
+
+// Initialize Cloudflare Turnstile App Check
+
 export const db = getFirestore(app);
 export { collection, addDoc, serverTimestamp, type Timestamp };
 
