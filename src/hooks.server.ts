@@ -1,5 +1,17 @@
 
 
+// src/app.d.ts
+declare global {
+    namespace App {
+        // interface Error {}
+        interface Locals {
+            validationCookie: string | undefined;
+        }
+        // interface PageData {}
+        // interface Platform {}
+    }
+}
+
 import { GenerateContentForDescription, GenerateImageFromRoute } from '$lib/AI/PageGenerator';
 import { PRIVATE_TURNSTILE_SECRET_KEY } from '$env/static/private';
 import { logServerSideEvent } from '$lib/server_analytics';
@@ -133,7 +145,8 @@ export const handle: Handle = async ({ event, resolve }) => {
         });
     }
 
-
+    let validationCookie = event.cookies.get('app-check-token');
+    event.locals.validationCookie = validationCookie;
 
     const isBot = /bot|crawl|spider|slurp|mediapartners/i.test(userAgent);
     //allow DiscordBot
