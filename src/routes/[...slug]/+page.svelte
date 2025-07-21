@@ -1,59 +1,38 @@
 <script lang="ts">
-    import { browser } from "$app/environment";
-    import { page } from "$app/stores";
-  import { marked } from "marked";
+  import { marked, Tokenizer } from "marked";
+  import { getFunctions, httpsCallable } from "firebase/functions";
+  import { app, check } from "$lib/firebase.js";
   let { data } = $props();
-  import { onMount } from "svelte";
+  let hasToken = $state(false);
 
   $effect(() => {
-    if(!browser) return;
-    const currentUrl = $page.url.pathname;
+    if (!check) return;
 
+    console.log("Page data:", data);
+    const functions = getFunctions(app, "europe-southwest1");
+    const generateContent = httpsCallable(functions, "generateContent");
 
-    
     const content = document.querySelectorAll("text-content");
     content.forEach(async (el) => {
       (el as any)._content = "";
-
       let description = el.getAttribute("description") ?? "<no description>";
-      const encodedDescription = encodeURIComponent(description);
-      let url = window.location.origin + window.location.pathname;
-      const response = await fetch(url + "stream", {
-        headers: {
-          Accept: "text/event-stream",
-          Description: encodedDescription,
-        },
-      });
+      const { stream, data } = await generateContent.stream({ description });
 
-      const reader = response.body?.getReader();
-      //append the text content to the element
-      if (reader) {
-        const decoder = new TextDecoder();
-
-        let done = false;
-        while (!done) {
-          const { value, done: doneReading } = await reader.read();
-          done = doneReading;
-          if (value) {
-            // remove data: from the start of the string
-            let chunk = decoder.decode(value, { stream: true });
-            if (chunk.startsWith("data: ")) {
-              chunk = chunk.slice(6);
-            }
-            console.log("Received chunk:", chunk);
-            (el as any)._content += chunk;
-            let content = (el as any)._content;
-            el.innerHTML = await marked.parse(content);
-
-            //el.innerHTML += chunk;
-          }
-        }
+      for await (const chunk of stream) {
+        console.log("Received chunk:", chunk);
+        (el as any)._content += (chunk as any).content;
+        let content = (el as any)._content;
+        el.innerHTML = await marked.parse(content);
       }
     });
   });
 </script>
 
-{@html data.html}
+{#if (data.html)}
+  {@html data.html}
+{/if}
+
+
 
 <style>
   main {

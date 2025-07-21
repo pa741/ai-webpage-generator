@@ -1,0 +1,35 @@
+# GitHub Actions workflow for Firebase Deployment
+name: Deploy to Firebase Hosting
+
+on:
+  push:
+    branches:
+      - main # Or master, depending on the default branch name
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20' # Specify Node.js version 18.x
+          cache: 'npm' # Optional: Caches npm dependencies
+
+      - name: Install dependencies
+        run: npm ci # Use 'npm ci' for cleaner, faster installs in CI
+
+      - name: Build project
+        run: npm run build
+
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: '${{ secrets.GITHUB_TOKEN }}'
+          projectId: 'generativewebpage' # From .firebaserc
+          channelId: live # Deploy to the live channel
+        env:
+          FIREBASE_TOKEN: '${{ secrets.FIREBASE_TOKEN }}'

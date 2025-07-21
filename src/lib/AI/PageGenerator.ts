@@ -4,31 +4,21 @@ import type { ChatCompletion } from '@cerebras/cerebras_cloud_sdk/resources.mjs'
 import { Runware } from '@runware/sdk-js';
 import Groq from "groq-sdk";
 import OpenAI from 'openai';
+import { CEREBRAS_API_KEY ,
+    GROQ_API_KEY,
+    RUNWARE_API_KEY } from '$env/static/private';
+    
 
 const client = new Cerebras({
-    apiKey: "csk-epw35p4r3cy429jk24n28e9k2jek9n8n39n43ckv8dmpwymn",
+    apiKey: CEREBRAS_API_KEY,
 });
-//chutes fingerprint 8OiyKsao5qxS3bBh9dnUzVQujNXYtc6I
-const router = new OpenAI({
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey: "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",
-});
-
-
-//groq key:
-//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 
-
-//codestral
-//AWjJBc0EWOkqk6ChAUtfLyZjqKc7iaeT
-
 
 const groq = new Groq({
-    apiKey: "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"
+    apiKey:  GROQ_API_KEY,
 
 });
 
-
-const runware = new Runware({ apiKey: "Xi6YFCP8Db33aym3bW7cE1ZPOsR5Avnw" });
+const runware = new Runware({ apiKey: RUNWARE_API_KEY });
 
 export async function GenerateHomePage() {
 
@@ -58,7 +48,8 @@ Style:
 
 async function GetImageDescriptionFromRoute(route: string) {
 
-    trackAIInteraction('image_description_generation_request', 'llama-3.3');
+    //trackAIInteraction('image_description_generation_request', 'llama-3.3');
+    trackAIInteraction('image_description_generation_request', 'llama3.1-8b');
 
     const systemPrompt = `/no_think You are an AI Image Description Generator. Your task is to interpret a descriptive URL route that points to an image and generate a rich, detailed textual description of what the image at that route could plausibly look like.
 
@@ -101,7 +92,7 @@ Example Output Description 3:
 
     let response = await client.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: route }],
-        model: "llama-3.3-70b"
+        model: "llama3.1-8b"
     })
     let description = (response.choices as any)[0]?.message.content as string;
 
@@ -227,12 +218,20 @@ Key Requirements:
 Content Integration:
 - For large blocks of text, use <text-content> tags to indicate where the text should be placed, This tag has description as a mandatory attribute. This is a placeholder for the actual content that will be dynamically inserted later. Ensure the tag has a description attribute that describes the content with a brief summary of what the text should convey, its purpose, any key points it should cover, writting style, **how long it should be** and any relevant context. Everything referenced in the description should have appropriate context.
 - For images, use made-up, descriptive relative URLs. The path should be logical and the filename should describe the image content, using hyphens for spaces (e.g., /images/team/lead-designer-portrait.jpg, /content/features/data-visualization-graph.png).
-- For links (<a> tags), use made-up, descriptive relative URLs (e.g., /services/detail/custom-solutions, /about-us/our-mission). The link text itself should also be descriptive.`;
+- For links (<a> tags), use made-up, descriptive relative URLs (e.g., /services/detail/custom-solutions, /about-us/our-mission). The link text itself should also be descriptive.
+Output Formatting Rules:
+- The response MUST be only the HTML code.
+- Do NOT include any explanations, introductory text, or concluding remarks.
+- Do NOT wrap the HTML in Markdown code blocks (i.e., no \`\`\`html or \`\`\`).
+- The output must start directly with the first HTML tag and end with the last one.
+`;
     try {
         let response = await client.chat.completions.create({
             messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
             //model: "llama-4-scout-17b-16e-instruct"
-            model: "qwen-3-32b"
+            //model: "qwen-3-32b",
+            model: "qwen-3-235b-a22b",
+            
         })
         //let response = await router.chat.completions.create({
         //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
@@ -256,8 +255,7 @@ Content Integration:
         let regex = /<think>.*<\/think>/g;
 
         html = html.replaceAll(regex, "").trim();
-        html = html.replace(/<think>/g, "").replace(/<\/think>/g, "").trim();
-        html = html.replace("```html", "").replace(">```", "").replace(">\n```", "").trim();
+        //html = html.replace(/<think>/g, "").replace(/<\/think>/g, "").trim();
         //html += "\n<!-- " + description + " -->";
         return html;
     } catch (error) {
