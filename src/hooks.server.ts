@@ -1,37 +1,20 @@
-declare global {
-    namespace App {
-        interface Locals {
-            appCheckValid: boolean;
-        }
-    }
-}
+
 
 import { GenerateContentForDescription, GenerateImageFromRoute } from '$lib/AI/PageGenerator';
-import { PRIVATE_TURNSTILE_SECRET_KEY, PRIVATE_FIREBASE_ADMIN_CREDENTIALS } from '$env/static/private';
+import { PRIVATE_TURNSTILE_SECRET_KEY } from '$env/static/private';
 import { logServerSideEvent } from '$lib/server_analytics';
 import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
 import { getAppCheck } from 'firebase-admin/app-check';
-import { initializeApp, getApps } from 'firebase-admin/app';
-
+import { initializeApp, getApps, applicationDefault } from 'firebase-admin/app';
 import type { Handle, RequestEvent } from '@sveltejs/kit'; // Ensure this type import is present or add it
 
-if (!getApps().length) {
-    initializeApp({
-        credential: JSON.parse(PRIVATE_FIREBASE_ADMIN_CREDENTIALS)
-    });
-}
+
+initializeApp({
+    credential: applicationDefault()
+});
+
 async function handleImageRequest(event: RequestEvent, pathname: string): Promise<Response> {
     let imageKey = pathname;
-    if(event.locals.appCheckValid === false) {
-        logServerSideEvent('blocked_access', { event_category: 'security', event_label: 'invalid_app_check', user_agent: event.request.headers.get('user-agent') || 'unknown' });
-        return new Response('Invalid App Check token', {
-            status: 403, // Forbidden
-            headers: {
-                'Content-Type': 'text/plain',
-                'X-Robots-Tag': 'noindex, nofollow',
-            }
-        });
-    }
 
     // Remove leading slash if present
     if (imageKey.startsWith('/')) {
@@ -135,36 +118,8 @@ const validTurnstileValidation = async (event: RequestEvent): Promise<boolean> =
 
 
 export const handle: Handle = async ({ event, resolve }) => {
-    let appCheckValid = false;
-    const appCheckToken = event.request.headers.get('X-Firebase-AppCheck');
-    console.log("App Check Token:", appCheckToken);
-    if (appCheckToken) {
-        try {
-            await getAppCheck().verifyToken(appCheckToken);
-            appCheckValid = true;
-        } catch (error) {
-            console.error('App Check token verification failed:', error);
-        }
-    }
-    event.locals.appCheckValid = appCheckValid;
-    
-
-    // check for Turnstile validation
-    /*const isTurnstileValid = await validTurnstileValidation(event);
-    if (!isTurnstileValid) {
-        logServerSideEvent('blocked_access', { event_category: 'security', event_label: 'invalid_turnstile', user_agent: event.request.headers.get('user-agent') || 'unknown' });
-        return new Response('Invalid Turnstile token', {
-            status: 403, // Forbidden
-            headers: {
-                'Content-Type': 'text/plain',
-                'X-Robots-Tag': 'noindex, nofollow',
-            }
-        });
-    } */
 
 
-
-    // check for bot in user-agent
     const userAgent = event.request.headers.get('user-agent') || '';
     if (!userAgent) {
         // Block requests with no user-agent
@@ -193,21 +148,6 @@ export const handle: Handle = async ({ event, resolve }) => {
             headers: {
                 'Cache-Control': 'public, max-age=3600, immutable',
                 'X-Robots-Tag': 'noindex, nofollow',
-            }
-        });
-    }
-
-
-
-
-    let isGet = event.request.method === 'GET';
-    if (!isGet) {
-        // Only handle GET requests
-        return new Response(null, {
-            status: 405, // Method Not Allowed
-            headers: {
-                'Allow': 'GET',
-                'Content-Type': 'text/plain',
             }
         });
     }

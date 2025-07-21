@@ -15,7 +15,7 @@ import {
 import {
   CloudflareProviderOptions,
 } from '@cloudflare/turnstile-firebase-app-check';
-import { CustomProvider, initializeAppCheck } from 'firebase/app-check';
+import { CustomProvider, initializeAppCheck, type AppCheck } from 'firebase/app-check';
 // Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: PUBLIC_FIREBASE_API_KEY,
@@ -30,16 +30,18 @@ const HTTP_ENDPOINT = 'https://europe-west2-generativewebpage.cloudfunctions.net
 
 export const app = initializeApp(firebaseConfig);
 let cpo: CloudflareProviderOptions | undefined = undefined;
+let check: AppCheck | undefined = undefined;
 if (browser) {
 
   cpo = new CloudflareProviderOptions(HTTP_ENDPOINT, PUBLIC_TURNSTILE_SITE_KEY);
   const provider = new CustomProvider(cpo);
 
-  initializeAppCheck(app, { provider });
+  check = initializeAppCheck(app, { provider });
 
+  console.log('Cloudflare Turnstile App Check initialized with site key:', PUBLIC_TURNSTILE_SITE_KEY);
 
 }
-export { cpo };
+export { cpo, check };
 
 // Initialize Cloudflare Turnstile App Check
 

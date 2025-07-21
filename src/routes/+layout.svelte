@@ -6,6 +6,8 @@
   // Track page views when route changes
   const { children, data } = $props();
   import { page } from "$app/state";
+  let token = data.token;
+
   $effect(() => {
     if (browser && page.url) {
       trackPageView(page.url.pathname, page.url.href);
@@ -16,11 +18,14 @@
 {#if browser}
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
 {/if}
 
 <div class="app">
-  {@render children()}
+  {#if token}
+    {@render children()}
+  {:else}
+    <p>Loading...</p>
+  {/if}
 </div>
 
 <style>
