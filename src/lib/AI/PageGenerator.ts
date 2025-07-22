@@ -141,11 +141,17 @@ export async function* GenerateContentForDescription(description: string) {
 
     trackAIInteraction('content_generation_request', 'llama-4-maverick');
     //llama3.1-8b	
-
-    let stream = await groq.chat.completions.create({
+//deepseek/deepseek-r1-0528:free
+    //let stream = await groq.chat.completions.create({
+    //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
+    //    model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+    //    stream: true
+    //})
+    let stream = await router.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
-        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-        stream: true
+        model: "deepseek/deepseek-chat-v3-0324:free",
+        stream: true,
+        
     })
 
     for await (const chunk of stream) {
