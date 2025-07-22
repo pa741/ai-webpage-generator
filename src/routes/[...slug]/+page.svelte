@@ -3,7 +3,7 @@
   import { getFunctions, httpsCallable } from "firebase/functions";
   import { app, check } from "$lib/firebase.js";
   let { data } = $props();
-  let hasToken = $state(false);
+  let style = $state<string | undefined>(undefined);
 
   $effect(() => {
     if (!check) return;
@@ -25,17 +25,23 @@
         el.innerHTML = await marked.parse(content);
       }
     });
+
+    $effect(() => {
+      if (data.css) {
+        style = `<style>${data.css}</style>`;
+      } else {
+        style = undefined;
+      }
+    });
   });
+
+  console.log("Data:", data);
 </script>
 
-{#if (data.html)}
+<svelte:head>
+  {@html style}
+</svelte:head>
+
+{#if data.html}
   {@html data.html}
 {/if}
-
-
-
-<style>
-  main {
-    padding: 1rem;
-  }
-</style>

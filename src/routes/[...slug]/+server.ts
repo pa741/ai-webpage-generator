@@ -28,7 +28,7 @@ export const POST: RequestHandler = async (event) => {
             }
         });
     }
-    let token = event.request.headers.get('x-app-check-token') || event.request.headers.get('app-check-token');
+    let token = event.request.headers.get('x-__session') || event.request.headers.get('__session');
 
 
     if (!token) {
@@ -39,10 +39,10 @@ export const POST: RequestHandler = async (event) => {
             }
         });
     }
-    console.log("Received App Check token:", token);
+    //console.log("Received App Check token:", token);
     try {
         await getAppCheck().verifyToken(token);
-        console.log('App Check token is valid');
+        //console.log('App Check token is valid');
     } catch (error) {
         console.error('Invalid App Check token:', error);
         return new Response('Invalid App Check token', {
@@ -53,10 +53,11 @@ export const POST: RequestHandler = async (event) => {
             }
         });
     }
-    event.cookies.set('app-check-token', token || '', {
-        httpOnly: true,
+    event.cookies.set('__session', token || '', {
+        httpOnly: false,
         secure: true,
-        sameSite: 'strict',
+        sameSite: 'none',
+        expires: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
         path: '/'
     });
 

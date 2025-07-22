@@ -16,7 +16,6 @@ import { GenerateContentForDescription, GenerateImageFromRoute } from '$lib/AI/P
 import { PRIVATE_TURNSTILE_SECRET_KEY } from '$env/static/private';
 import { logServerSideEvent } from '$lib/server_analytics';
 import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
-import { getAppCheck } from 'firebase-admin/app-check';
 import { initializeApp, getApps, applicationDefault } from 'firebase-admin/app';
 import type { Handle, RequestEvent } from '@sveltejs/kit'; // Ensure this type import is present or add it
 
@@ -86,52 +85,21 @@ async function handleImageRequest(event: RequestEvent, pathname: string): Promis
 }
 
 
-const validTurnstileValidation = async (event: RequestEvent): Promise<boolean> => {
-    // Check if the request has a valid Turnstile token
-    const turnstileToken = event.request.headers.get('turnstile-token') || event.cookies.get('turnstile-token');
-    const clearanceCookie = event.cookies.get('cf_clearance');
-    if (clearanceCookie) {
-        console.log('Clearance cookie found, skipping Turnstile validation');
-        return true; // Skip validation if clearance cookie is present
-    }
-
-
-    if (!turnstileToken) {
-        console.warn('Turnstile token is missing');
-        return false;
-    }
-    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-            secret: PRIVATE_TURNSTILE_SECRET_KEY,
-            response: turnstileToken,
-        }),
-    });
-    if (!response.ok) {
-        console.error('Turnstile verification failed:', response.statusText);
-        return false;
-    }
-    const data = await response.json();
-
-    if (!data.success) {
-        console.warn('Turnstile verification failed:', data['error-codes']);
-        return false;
-    }
-    console.log('Turnstile verification successful');
-
-    event.cookies.delete('turnstile-token', { path: '/' }); // Delete the token cookie after successful verification
-
-    return true;
-
-
-}
-
-
 
 export const handle: Handle = async ({ event, resolve }) => {
 
+    let validationCookie = event.cookies.get('__session');
+    console.log("Setting validation cookie:", validationCookie);
+    console.log("Request Path:", event.url.pathname);
+    console.log("Incoming request headers:", Object.fromEntries(event.request.headers.entries()));
 
+    let allCookies = event.cookies.getAll();
+    console.log("All cookies:", allCookies);
+
+    event.locals =
+    {
+        validationCookie: validationCookie || undefined
+    }
     const userAgent = event.request.headers.get('user-agent') || '';
     if (!userAgent) {
         // Block requests with no user-agent
@@ -145,8 +113,7 @@ export const handle: Handle = async ({ event, resolve }) => {
         });
     }
 
-    let validationCookie = event.cookies.get('app-check-token');
-    event.locals.validationCookie = validationCookie;
+
 
     const isBot = /bot|crawl|spider|slurp|mediapartners/i.test(userAgent);
     //allow DiscordBot
@@ -159,7 +126,7 @@ export const handle: Handle = async ({ event, resolve }) => {
         return new Response(null, {
             status: 204, // No Content
             headers: {
-                'Cache-Control': 'public, max-age=3600, immutable',
+                'Cache-Control': 'private, no-cache',
                 'X-Robots-Tag': 'noindex, nofollow',
             }
         });
@@ -200,7 +167,7 @@ export const handle: Handle = async ({ event, resolve }) => {
         return new Response(readStream, {
             headers: {
                 'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
+                'Cache-Control': 'private, no-cache',
                 'Connection': 'keep-alive',
                 'Access-Control-Allow-Origin': '*',
                 'X-Robots-Tag': 'noindex, nofollow', // Prevent indexing of this page
@@ -224,7 +191,8 @@ export const handle: Handle = async ({ event, resolve }) => {
     }
 
     const response = await resolve(event);
-    response.headers.set('Cache-Control', 'public, max-age=60, immutable');
+    response.headers.set('Cache-Control', 'private, no-cache');
+    response.headers.set("vary", "Cookie, Accept");
     response.headers.set('X-Robots-Tag', 'noindex, nofollow'); // Prevent indexing of this page
     return response;
 };

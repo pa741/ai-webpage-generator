@@ -15,11 +15,6 @@
   });
 </script>
 
-{#if browser}
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-{/if}
-
 <div class="app">
   {#if token}
     {@render children()}
