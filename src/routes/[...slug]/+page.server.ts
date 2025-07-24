@@ -23,17 +23,20 @@ export const load: PageServerLoad = async (event) => {
     }
     let pathname = event.url.pathname;
     let homepage = pathname === '/';
-    let html = undefined;
+    let htmlRes = undefined;
+    let promptRes = undefined;
     if (homepage) {
         // Handle homepage generation
-        //html = await GenerateHomePage();
-        html = "<p class=\"text-2xl font-bold\">Welcome to the AI Webpage Generator!</p>";
+        htmlRes = await GenerateHomePage(event.request);
+        //html = "<p class=\"text-2xl font-bold\">Welcome to the AI Webpage Generator!</p>";
     }
 
     else {
         // Handle HTML generation for other routes
         let description = pathname.replace(/^\//, ''); // Remove leading slash
-        html = await GenerateHtml(description);
+        let { prompt, html } = await GenerateHtml(event.request, description);
+        promptRes = prompt;
+        htmlRes = html;
     }
 
     const inputCss = `
@@ -44,30 +47,12 @@ export const load: PageServerLoad = async (event) => {
     //https://github.com/tailwindlabs/tailwindcss/discussions/18467
 
 
-    console.log("HTML:", html);
-
-    let generatedCss: string | undefined = undefined;
-    let tempHtmlFile = path.join(process.cwd(), 'temp.html');
-    await fs.writeFile(tempHtmlFile, html);
-
-
-
-    try {
-        const result = await postcss([
-            // Your configuration here remains the same
-            tailwindcss({
-
-            }),
-        ]).process(inputCss, { from: undefined });
-        generatedCss = result.css;
-    } catch (error) {
-        console.error('Tailwind CSS generation error:', error);
-    }
 
 
     return {
-        html: html,
+        html: htmlRes,
+        prompt: promptRes,
         token: token,
-        css: generatedCss,
+        css: undefined,
     }
 }

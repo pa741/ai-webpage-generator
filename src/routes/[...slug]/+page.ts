@@ -6,6 +6,7 @@ export const load: PageLoad = async ({ data, parent }) => {
         return {
             html: data.html,
             css: data.css,
+            prompt: data.prompt,
         }
     }
     if (!browser) {
@@ -15,13 +16,16 @@ export const load: PageLoad = async ({ data, parent }) => {
     if (!token) {
         return;
     }
-    let html = await fetch(window.location.href, {
+    let response = await fetch(window.location.href, {
         headers: {
             'x-__session': token,
         },
         method: 'POST'
     });
-    return {
-        html: await html.text()
-    };
+    if (response.ok) {
+        // reload the page
+        window.location.reload();
+    }
+
+    return;
 };

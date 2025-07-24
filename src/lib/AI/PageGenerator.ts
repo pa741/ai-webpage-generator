@@ -4,26 +4,50 @@ import type { ChatCompletion } from '@cerebras/cerebras_cloud_sdk/resources.mjs'
 import { Runware } from '@runware/sdk-js';
 import Groq from "groq-sdk";
 import OpenAI from 'openai';
-import { CEREBRAS_API_KEY ,
+import {
+    CEREBRAS_API_KEY,
     GROQ_API_KEY,
-    RUNWARE_API_KEY } from '$env/static/private';
-    
+    RUNWARE_API_KEY
+} from '$env/static/private';
+import { getRemoteConfig, RemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
+import app from '../firebase_admin';
 
 const client = new Cerebras({
     apiKey: CEREBRAS_API_KEY,
 });
 
 const groq = new Groq({
-    apiKey:  GROQ_API_KEY,
+    apiKey: GROQ_API_KEY,
 
 });
 
 const runware = new Runware({ apiKey: RUNWARE_API_KEY });
 
-export async function GenerateHomePage() {
 
-    const prompt = `
-    This webpage is a homepage for a modern, innovative, and user-friendly website. It should have a clean, contemporary design with a focus on usability and aesthetics.
+async function GetConfig(request: Request): Promise<ServerConfig> {
+    const remoteConfig = getRemoteConfig(app);
+    console.log('Fetching remote config...');
+    console.log('Remote config:', remoteConfig);
+    //list methods of remoteConfig
+    let methods = Object.getOwnPropertyNames(Object.getPrototypeOf(remoteConfig));
+    console.log('Remote config methods:', methods);
+
+    const template = await remoteConfig.getServerTemplate()
+    console.log('Remote config template:', template);
+    //await template.load();
+
+
+    const config = template.evaluate({
+        platform: request.headers.get('Sec-CH-UA-Platform') || 'unknown',
+        userAgent: request.headers.get('User-Agent') || 'unknown',
+        acceptLanguage: request.headers.get('Accept-Language') || 'en-US',
+        referer: request.headers.get('Referer') || '',
+    });
+
+    return config;
+}
+/*
+his webpage is a homepage for a modern, innovative, and user-friendly website. It should have a clean, contemporary design with a focus on usability and aesthetics.
     
     Content:
 - Generate a brief text introduction that mentions the following key points:
@@ -40,18 +64,19 @@ Style:
 - Main content area should be centered. 
 - Use css animations to make the page visually appealing, such as hover effects on links and buttons.
 
-`
+*/
 
-    return await RequestHtml(prompt);
+export async function GenerateHomePage(request: Request) {
+    const config = await GetConfig(request);
+    const prompt = config.getString('home_page_prompt');
+    if (!prompt) {
+        throw new Error("Home page prompt not found in remote config");
+    }
+
+    return await RequestHtml(request, prompt);
 }
-
-
-async function GetImageDescriptionFromRoute(route: string) {
-
-    //trackAIInteraction('image_description_generation_request', 'llama-3.3');
-    trackAIInteraction('image_description_generation_request', 'llama3.1-8b');
-
-    const systemPrompt = `/no_think You are an AI Image Description Generator. Your task is to interpret a descriptive URL route that points to an image and generate a rich, detailed textual description of what the image at that route could plausibly look like.
+/*
+/no_think You are an AI Image Description Generator. Your task is to interpret a descriptive URL route that points to an image and generate a rich, detailed textual description of what the image at that route could plausibly look like.
 
 The URL will provide clues through its path segments (folders) and filename (including the extension, though the extension itself is less important than the descriptive words).
 
@@ -88,27 +113,40 @@ Example Input URL 3:
 /art/digital/sci-fi/cyborg_neon_city_rain_reflection.webp
 
 Example Output Description 3:
-"A digital art piece depicting a cyborg figure in a futuristic, neon-lit cityscape. The cyborg might have visible mechanical parts integrated with a human-like form, perhaps with glowing elements. The city is drenched in rain, causing the vibrant neon lights (pinks, blues, purples) from signs and buildings to reflect dramatically on wet streets and surfaces. The atmosphere is likely dark, moody, and Blade Runner-esque, with a focus on reflections and the interplay of light and shadow.`
+"A digital art piece depicting a cyborg figure in a futuristic, neon-lit cityscape. The cyborg might have visible mechanical parts integrated with a human-like form, perhaps with glowing elements. The city is drenched in rain, causing the vibrant neon lights (pinks, blues, purples) from signs and buildings to reflect dramatically on wet streets and surfaces. The atmosphere is likely dark, moody, and Blade Runner-esque, with a focus on reflections and the interplay of light and shadow.
+
+*/
+
+async function GetImageDescriptionFromRoute(request: Request, route: string) {
+
+    //trackAIInteraction('image_description_generation_request', 'llama-3.3');
+    const config = await GetConfig(request);
+    const systemPrompt = config.getString('image_description_prompt');
+    const model = config.getString('image_description_model');
+    trackAIInteraction('image_description_generation_request', model);
 
     let response = await client.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: route }],
-        model: "llama3.1-8b"
+        model: model
     })
     let description = (response.choices as any)[0]?.message.content as string;
 
     return description;
 
 }
-export async function GenerateImageFromRoute(route: string) {
+export async function GenerateImageFromRoute(request: Request, route: string) {
     console.log("Generating image for route:", route);
     await runware.ensureConnection();
 
-    let description = await GetImageDescriptionFromRoute(route);
+    let description = await GetImageDescriptionFromRoute(request, route);
+    const config = await GetConfig(request);
+    const negativePrompt = config.getString('image_description_negative_prompt'); // blurry, low quality, bad quality, low resolution, out of focus, poorly drawn, poorly rendered, poorly lit, poorly composed, poorly framed, poorly cropped, poorly colored, poorly designed, poorly styled, text, watermark, logo, signature, copyright, low contrast, overexposed, underexposed, dark, bright, noisy, grainy
+    const model = config.getString('image_generation_model');
 
     let response = await runware.requestImages({
-        model: "runware:100@1",
+        model: model,
         positivePrompt: description,
-        negativePrompt: "blurry, low quality, bad quality, low resolution, out of focus, poorly drawn, poorly rendered, poorly lit, poorly composed, poorly framed, poorly cropped, poorly colored, poorly designed, poorly styled, text, watermark, logo, signature, copyright, low contrast, overexposed, underexposed, dark, bright, noisy, grainy",
+        negativePrompt: negativePrompt,
         numberResults: 1,
         CFGScale: 1,
         steps: 1,
@@ -123,66 +161,35 @@ export async function GenerateImageFromRoute(route: string) {
         console.error("No image generated for route:", route);
         return "";
     }
-    trackAIInteraction('image_generation_request', 'runware:100@1');
+    trackAIInteraction('image_generation_request', model);
     return response[0].imageBase64Data;
 }
 
-export async function* GenerateContentForDescription(description: string) {
-    const systemPrompt = `You are a professional, versatile, and creative website content creator. Your primary purpose is to generate high-quality, engaging, and well-structured text content based on the specific context and requirements provided by the user. The generated content should be ready for publication on a website.
-    Your main goal is to take a user's general description and transform it into a specific piece of website content. You must adhere strictly to all instructions regarding the content type, tone, audience, and formatting.
-    Your output should be plain text, without any HTML tags or formatting. The content should be structured in a way that is easy to read and understand, with clear headings, subheadings, and paragraphs where appropriate.
-    You may use markdown syntax for basic formatting and linking to resources.
-    When linking to resources, use relative URLs (e.g., /about-us, /contact) without any domain or protocol. The link text itself should be descriptive of the content it links to.
-    Do not include any external links or references to specific websites, products, or services unless explicitly requested by the user.
-    Do not include any placeholders or comments in the output. The content should be complete and ready for publication.
-    Do not include images, videos, or any other media in the output. The content should be purely text-based.
-    Your output should be concise, relevant, and directly address the user's request. Avoid unnecessary fluff or filler content, unless specified by the user.
-    You are now ready to receive the user's request. Provide the best possible content based on the inputs.`;
-
-    trackAIInteraction('content_generation_request', 'llama-4-maverick');
-    //llama3.1-8b	
-//deepseek/deepseek-r1-0528:free
-    //let stream = await groq.chat.completions.create({
-    //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
-    //    model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-    //    stream: true
-    //})
-    let stream = await router.chat.completions.create({
-        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
-        model: "deepseek/deepseek-chat-v3-0324:free",
-        stream: true,
-        
-    })
-
-    for await (const chunk of stream) {
-        let choices = chunk.choices as any[];
-        let delta = choices[0].delta as any;
-        if (delta && delta.content) {
-            yield delta.content as string;
-        }
-    }
-
-
-}
-
-
-
-
-export async function GenerateHtml(route: string, referer?: string | null) {
-
-    trackAIInteraction('website_generation_request', 'llama-4');
-    console.log("Generating HTML for route:", route, "Referer:", referer);
-
-
-    const systemPrompt = `/no_think You are a highly imaginative Senior UX/UI Designer and Content Strategist AI. Your task is to take only a given relative URL route and generate a concise, general description of the ideal version of that webpage. 
+/*
+/no_think 
+    You are a highly imaginative Senior UX/UI Designer. You enjoy creating unique, modern, stunning and interactive web pages that are visually appealing and user-friendly. You have a deep understanding of web design principles, user experience, and the latest design trends. 
+    Your task is to take a given relative URL route and generate a concise description of the ideal version of that webpage. 
     Your description should focus on its key aspects, overall style, and vibe.
-
+    Your first task should be to infer the intent of the user based on the route, Some pages may not align with common archtypes, so you should use your best judgement to determine the most appropriate context.
     Although you will only receive the URL, you must internally infer a plausible context (website type, hypothetical brand, audience, page purpose) to inform your description.
-    Do not explicitly state this inferred context in your output. Your description of the webpage should naturally flow from these internal assumptions.
+    Do not explicitly state this inferred context in your output. Your description of the webpage should naturally flow from these internal assumptions. 
     The more specific the URL route, the more targeted your description can be. For very generic routes, you may need to internally assume a common archetype.
     Include the given route in your response as a comment at the end.
-    Ocassionaly you may also receive a referer URL, which can provide additional context about the page's purpose or audience. Use this information to enhance your description, but do not include it in the output.
-    `
+    The description should provide a clear, vivid picture of the webpage's content, structure, design and functionality. Complex functionality or interactions should be described in a way that is easy to understand.
+    The description should not have ambiguous or open to interpretation design decisions. Do not let the end designer make decisions about the design, rather you should provide a clear, concise description of the design. 
+    
+*/
+
+export async function GenerateHtml(request: Request, route: string, referer?: string | null) {
+
+    console.log("Generating HTML for route:", route, "Referer:", referer);
+
+    const config = await GetConfig(request);
+    const systemPrompt = config.getString('html_designer_prompt');
+    const model = config.getString('html_designer_model');
+    trackAIInteraction('website_generation_request', model);
+
+
     let input = {
         route
     } as any;
@@ -194,18 +201,16 @@ export async function GenerateHtml(route: string, referer?: string | null) {
     let response = await client.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: JSON.stringify(input) }],
         //model: "qwen-3-32b"
-        model: "llama-4-scout-17b-16e-instruct"
+        model: model
     })
     let description = (response.choices as any)[0]?.message.content as string;
 
-    return await RequestHtml(description);
+    return { prompt: description, html: await RequestHtml(request, description) };
 
 
 }
-async function RequestHtml(description: string) {
-    trackAIInteraction('website_generation_request', 'qwen-3-32b');
-
-    const systemPrompt = `/no_think You are an expert web developer specializing in modern and innovative UI/UX design, with strong proficiency in Tailwind CSS and the ability to integrate custom CSS and JavaScript when necessary for enhanced functionality or unique visual effects.
+/*
+/no_think You are an expert web developer specializing in modern and innovative UI/UX design, with strong proficiency in Tailwind CSS and the ability to integrate custom CSS and JavaScript when necessary for enhanced functionality or unique visual effects.
 Task: Generate a single, raw HTML fragment (no <html>, <head>, or <body> tags, just the content that would go inside the <body>) based on the provided webpage description.
 Key Requirements:
 - HTML Fragment: The output must be a raw HTML fragment.
@@ -224,14 +229,23 @@ Output Formatting Rules:
 - Do NOT include any explanations, introductory text, or concluding remarks.
 - Do NOT wrap the HTML in Markdown code blocks (i.e., no \`\`\`html or \`\`\`).
 - The output must start directly with the first HTML tag and end with the last one.
-`;
+
+
+*/
+
+async function RequestHtml(request: Request, description: string) {
+    const config = await GetConfig(request);
+    const systemPrompt = config.getString('html_generator_prompt');
+    const model = config.getString('html_generator_model');
+    trackAIInteraction('website_generation_request', model);
+
     try {
         let response = await client.chat.completions.create({
             messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
             //model: "llama-4-scout-17b-16e-instruct"
             //model: "qwen-3-32b",
-            model: "qwen-3-235b-a22b",
-            
+            model: model,
+
         })
         //let response = await router.chat.completions.create({
         //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],

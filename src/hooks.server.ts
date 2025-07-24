@@ -12,17 +12,13 @@ declare global {
     }
 }
 
-import { GenerateContentForDescription, GenerateImageFromRoute } from '$lib/AI/PageGenerator';
+import { GenerateImageFromRoute } from '$lib/AI/PageGenerator';
 import { PRIVATE_TURNSTILE_SECRET_KEY } from '$env/static/private';
 import { logServerSideEvent } from '$lib/server_analytics';
 import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
-import { initializeApp, getApps, applicationDefault } from 'firebase-admin/app';
 import type { Handle, RequestEvent } from '@sveltejs/kit'; // Ensure this type import is present or add it
+import './lib/firebase_admin';
 
-
-initializeApp({
-    credential: applicationDefault()
-});
 
 async function handleImageRequest(event: RequestEvent, pathname: string): Promise<Response> {
     let imageKey = pathname;
@@ -62,18 +58,17 @@ async function handleImageRequest(event: RequestEvent, pathname: string): Promis
 
     try {
         const docRef = await addDoc(collection(db, "imageAccessLog"), dataToSave);
-        console.log("Image access logged to Firestore with ID: ", docRef.id);
     } catch (e) {
         console.error("Error adding document to Firestore: ", e);
         // Decide if you want to fail the request or just log. For now, just log.
     }
+    
 
     const userAgent = event.request.headers.get('user-agent') || 'unknown';
     const referer = event.request.headers.get('referer') || 'unknown';
     logServerSideEvent('image_viewed', { event_category: 'engagement', event_label: pathname, custom_parameter: 'image_request', user_agent: userAgent, page_referrer: referer });
-    let imageBase64 = await GenerateImageFromRoute(pathname);
+    let imageBase64 = await GenerateImageFromRoute(event.request,pathname);
     const imageBuffer = Buffer.from(imageBase64, 'base64');
-    console.log("Image buffer size:", imageBuffer.length);
     return new Response(imageBuffer, {
         status: 200,
         headers: {
@@ -89,12 +84,8 @@ async function handleImageRequest(event: RequestEvent, pathname: string): Promis
 export const handle: Handle = async ({ event, resolve }) => {
 
     let validationCookie = event.cookies.get('__session');
-    console.log("Setting validation cookie:", validationCookie);
     console.log("Request Path:", event.url.pathname);
-    console.log("Incoming request headers:", Object.fromEntries(event.request.headers.entries()));
 
-    let allCookies = event.cookies.getAll();
-    console.log("All cookies:", allCookies);
 
     event.locals =
     {
@@ -119,7 +110,6 @@ export const handle: Handle = async ({ event, resolve }) => {
     //allow DiscordBot
     const isDiscordBot = /Discordbot/i.test(userAgent);
     console.log("User-Agent:", userAgent);
-    console.log("Is Bot:", isBot);
     if (isBot && !isDiscordBot) {
         // Log bot access
         logServerSideEvent('bot_access', { event_category: 'engagement', event_label: event.url.pathname, user_agent: userAgent });
@@ -132,53 +122,10 @@ export const handle: Handle = async ({ event, resolve }) => {
         });
     }
 
-    let isEventSource = event.request.headers.get('accept')?.includes('text/event-stream');
-    console.log("isEventSource:", isEventSource);
-    if (isEventSource) {
-        // Handle EventSource requests
-        let encodeddescription = event.request.headers.get('description');
-        if (!encodeddescription) {
-            return new Response('Missing description header', {
-                status: 400, // Bad Request
-                headers: {
-                    'Content-Type': 'text/plain'
-                }
-            });
-        }
-        const description = decodeURIComponent(encodeddescription);
-        console.log("Received description:", description);
-        let generator = await GenerateContentForDescription(description);
-        let readStream = new ReadableStream({
-            async start(controller) {
-                try {
-                    for await (const chunk of generator) {
-                        // Format as Server-Sent Events
-                        //const formattedChunk = `data: ${JSON.stringify(chunk)}\n\n`;
-                        const formattedChunk = `${chunk}`;
-                        controller.enqueue(new TextEncoder().encode(formattedChunk));
-                    }
-                    controller.close();
-                } catch (error) {
-                    console.error('Stream error:', error);
-                    controller.error(error);
-                }
-            }
-        });
-        return new Response(readStream, {
-            headers: {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'private, no-cache',
-                'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*',
-                'X-Robots-Tag': 'noindex, nofollow', // Prevent indexing of this page
-            }
-        });
-    }
-
     let pathname = event.url.pathname;
     if (pathname.endsWith('.png') || pathname.endsWith('.jpg') || pathname.endsWith('.jpeg') || pathname.endsWith('.gif') || pathname.endsWith('.webp') || pathname.endsWith('.avif') || pathname.endsWith('.svg')) {
         // Not favicon
-        if (pathname === '/favicon.png' || pathname === '/favicon.ico') {
+        if (pathname.endsWith('favicon.png') || pathname.endsWith('favicon.ico')) {
             return new Response(null, {
                 status: 204,
                 headers: {

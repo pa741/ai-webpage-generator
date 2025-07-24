@@ -9,6 +9,7 @@ export default {
     adapter: adapter()
   },
   compilerOptions: {
-    sourcemap: true
+    sourcemap: true,
+    customElement: true
   },
 }
