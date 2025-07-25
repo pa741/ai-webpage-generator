@@ -8,6 +8,7 @@
   import { page } from "$app/state";
   import { onMount } from "svelte";
   import TextContent from "../Components/TextContent.svelte";
+  import ThreeCanvas from "../Components/ThreeCanvas.svelte";
   let token = data.token;
   /*
   onMount(() => {
