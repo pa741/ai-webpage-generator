@@ -12,5 +12,5 @@
    -  Layout -- Consitency across session
    -  Styles -- Consitency across session
    -  ThreeCanvas -- 3D Canvas
-   -  
-
+- UserInfo
+  - Tell the llm the user's language, keep in mind that the url may be for a specific language  

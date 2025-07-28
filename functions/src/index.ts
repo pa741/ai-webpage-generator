@@ -83,24 +83,36 @@ export const createScene = onCall({
     region: "europe-southwest1"
     //, cors:[/groots.es$/]
 }, async (request, response) => {
-    const { description } = request.data;
+    const { description } = request.data as { description: string };
     if (!description) {
         throw new Error("Prompt is required");
     }
     const config = await GetConfig(request.rawRequest);
-    const prompt = config.getString("content_writter_prompt");
-    const model = config.getString("content_writter_model");
+    const prompt = config.getString("three_generator_prompt");
+    const model = config.getString("three_generator_model");
 
     let aiResponse = await ai.models.generateContent({
         model: model,
+
         config: {
 
             systemInstruction: prompt
         },
-        contents: description
+        contents: [
+            { role: "user", parts: [{ text: description }] },
+            {
+                role: "assistant", parts: [{
+                    text: `import * as THREE from "three";
+const canvas = document.createElement('canvas');
+const renderer = new THREE.WebGLRenderer({antialias: true, canvas});
+document.body.appendChild(renderer.domElement);
+        `}]
+            }
+
+        ]
     });
 
-    return aiResponse.text;
+    return { script: aiResponse.text };
 
 })
 
