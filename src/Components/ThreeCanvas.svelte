@@ -31,20 +31,41 @@
     async function runDynamicScene(desc: string) {
         console.log("Generating scene for description:", desc);
         const { data } = await createScene({ description: desc });
-        const scriptString = `
+        let dataScript = data.script;
+
+                // if  "function build(canvas) {" is present:
+        // remove it and everything before it
+        // and also remove the closing "}" and any content after it
+
+        if (dataScript.includes("function build(canvas) {")) {
+            dataScript = dataScript.split("function build(canvas) {")[1];
+            // get last closing "}" and remove it
+            const lastClosingBraceIndex = dataScript.lastIndexOf("}");
+            if (lastClosingBraceIndex !== -1) {
+                dataScript = dataScript.substring(0, lastClosingBraceIndex);
+            }
+
+        }
+
+
+        let scriptString = `
         import * as THREE from "three";
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
         export default function main(canvas)
         {
-            const renderer = new THREE.WebGLRenderer({antialias: true, canvas});
+            //const renderer = new THREE.WebGLRenderer({antialias: true, canvas});
 
-            ${data.script
+            ${dataScript
             .replaceAll("document.body.appendChild(renderer.domElement);","")
             .replaceAll("THREE.OrbitControls","OrbitControls")
             .replaceAll("```","")
+            .replaceAll("javascript","")
             }
         }
        `;
+
+
        console.log("Generated script:", scriptString);
 
         // 1. Create a Blob from the script string

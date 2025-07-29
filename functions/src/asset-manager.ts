@@ -18,6 +18,7 @@ interface HdriAsset {
     thumbnail_url: string;
     hdriUrl?: string; // Optional, will be added later
 }
+/*
 
 interface HdriResponse {
     [key: string]: HdriAsset;
@@ -35,7 +36,6 @@ interface HdriFiles {
     colorchart: HdriFile;
     tonemapped: HdriFile;
 }
-
 
 
 async function LoadHdris() {
@@ -75,7 +75,7 @@ async function LoadHdris() {
     return assets;
 
 }
-
+*/
 
 
 interface PolyPizzaAsset {
@@ -101,7 +101,7 @@ export async function GetModel(search: string): Promise<string> {
     const encodedSearch = encodeURIComponent(search);
     const polyApiKey = "3abc7eff92ea4a8eb4d2e4af396e1aa9"; // poly.pizza api key
 
-    const response = await axios.get<{ total: number; results: PolyPizzaAsset[] }>(`https://poly.pizza/api/v1/search?search=${encodedSearch}&limit=10`, {
+    const response = await axios.get<{ total: number; results: PolyPizzaAsset[] }>(`https://api.poly.pizza/v1/search?search=${encodedSearch}&limit=10&animated=0`, {
         headers: {
             'x-auth-token': polyApiKey
         }
