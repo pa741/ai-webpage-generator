@@ -33,7 +33,7 @@
         const { data } = await createScene({ description: desc });
         const scriptString = `
         import * as THREE from "three";
-        import { OrbitControls } from "three-orbitcontrols";
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         export default function main(canvas)
         {
             const renderer = new THREE.WebGLRenderer({antialias: true, canvas});
@@ -41,6 +41,7 @@
             ${data.script
             .replaceAll("document.body.appendChild(renderer.domElement);","")
             .replaceAll("THREE.OrbitControls","OrbitControls")
+            .replaceAll("```","")
             }
         }
        `;

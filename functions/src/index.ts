@@ -14,7 +14,7 @@ import { getRemoteConfig, type ServerConfig } from "firebase-admin/remote-config
 import { initializeApp } from "firebase-admin/app";
 
 const ai = new GoogleGenAI({ apiKey: "AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0" });
-
+// 3abc7eff92ea4a8eb4d2e4af396e1aa9 -> poly.pizza
 const app = initializeApp();
 
 async function GetConfig(headers: Request): Promise<ServerConfig> {
@@ -77,8 +77,19 @@ export const generateContent = onCall({
     return fullResponse;
 
 })
+/*
 
 
+const getHdriEnviroment = async (search: string): Promise<string> => {
+
+    return "";
+}
+const getGLTFModel = async (search: string): Promise<string> => {
+    return "";
+}
+
+
+*/
 export const createScene = onCall({
     region: "europe-southwest1"
     //, cors:[/groots.es$/]
@@ -90,6 +101,7 @@ export const createScene = onCall({
     const config = await GetConfig(request.rawRequest);
     const prompt = config.getString("three_generator_prompt");
     const model = config.getString("three_generator_model");
+
 
     let aiResponse = await ai.models.generateContent({
         model: model,
@@ -103,6 +115,9 @@ export const createScene = onCall({
             {
                 role: "assistant", parts: [{
                     text: `import * as THREE from "three";
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+
 const canvas = document.createElement('canvas');
 const renderer = new THREE.WebGLRenderer({antialias: true, canvas});
 document.body.appendChild(renderer.domElement);
