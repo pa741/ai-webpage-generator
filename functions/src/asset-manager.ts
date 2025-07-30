@@ -1,7 +1,8 @@
 
+import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
-import { getFirestore } from 'firebase-admin/firestore';
-
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
+import * as admin from 'firebase-admin';
 
 
 interface HdriAsset {
@@ -18,7 +19,7 @@ interface HdriAsset {
     thumbnail_url: string;
     hdriUrl?: string; // Optional, will be added later
 }
-/*
+
 
 interface HdriResponse {
     [key: string]: HdriAsset;
@@ -38,7 +39,7 @@ interface HdriFiles {
 }
 
 
-async function LoadHdris() {
+export async function LoadHdris() {
     //https://api.polyhaven.com/assets?t=hdris
     const response = await axios.get<HdriResponse>('https://api.polyhaven.com/assets?t=hdris');
     const assets = response.data;
@@ -75,7 +76,7 @@ async function LoadHdris() {
     return assets;
 
 }
-*/
+
 
 
 interface PolyPizzaAsset {
@@ -95,26 +96,134 @@ interface PolyPizzaAsset {
     Licence: string;
     Animated: boolean;
 }
+export async function LoadModels(ai: GoogleGenAI) {
+    //https://api.poly.pizza/v1/user/Poly%20by%20Google
+    const allAssets: PolyPizzaAsset[] = [];
+    let page = -1;
+    let hasMorePages = true;
 
-export async function GetModel(search: string): Promise<string> {
-    //URL encoded search term e.g. Cat or Shiba%20Inu.
-    const encodedSearch = encodeURIComponent(search);
-    const polyApiKey = "3abc7eff92ea4a8eb4d2e4af396e1aa9"; // poly.pizza api key
+    while (hasMorePages) {
+        try {
+            page++;
 
-    const response = await axios.get<{ total: number; results: PolyPizzaAsset[] }>(`https://api.poly.pizza/v1/search?search=${encodedSearch}&limit=10&animated=0`, {
-        headers: {
-            'x-auth-token': polyApiKey
+            const response = await axios.get<{ models: PolyPizzaAsset[] }>(`https://api.poly.pizza/v1/user/Poly%20by%20Google?page=${page}`, {
+                headers: {
+                    'x-auth-token': '3abc7eff92ea4a8eb4d2e4af396e1aa9' // poly.pizza api key
+                }
+            });
+
+            if (response.status !== 200) {
+                continue;
+            }
+            const models = response.data.models;
+            console.log(`Loaded ${models.length} models from page ${page}`);
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limit to avoid hitting API limits
+            allAssets.push(...models);
+
+            if (models.length < 32) {
+                hasMorePages = false;
+            }
+        } catch (error) {
+            console.error(`Error loading models from page ${page}:`, error);
+            continue; // Skip this page and try the next one
         }
-    });
-    // Get the first result that is less than 10000 triangles
-    const assets = response.data.results.filter(asset => asset['Tri Count'] < 10000);
-    if (assets.length === 0) {
-        throw new Error('No suitable models found');
     }
-    // Return the first asset url
-    const asset = assets[0];
-    const modelUrl = asset.Download;
-    return modelUrl;
+
+    // filter out models with more than 10000 triangles
+    const filteredAssets = allAssets.filter(asset => asset['Tri Count'] < 10000);
+
+
+    const storage = admin.storage();
+    const bucket = storage.bucket();
+    const db = getFirestore();
+    const batch = db.batch();
+
+    let i = 0;
+    const uploadPromises: Promise<void>[] = [];
+    for (const asset of filteredAssets) {
+        i++;
+        if (i % 10 === 0) {
+            console.log(`Processing model ${i} of ${filteredAssets.length}...`);
+        }
+        const fileName = `models/${asset.ID}.glb`;
+        const file = bucket.file(fileName);
+        const docRef = db.collection('models').doc(asset.ID);
+
+        // Check if the file already exists
+        const [exists] = await file.exists();
+        if (!exists) {
+            try {
+                // Download the model
+                const modelResponse = await axios.get(asset.Download, { responseType: 'arraybuffer' });
+                // Start the upload but don't wait for it to finish yet
+                const uploadPromise = file.save(modelResponse.data, {
+                    contentType: 'model/gltf-binary',
+                }).then(async () => {
+                    await file.makePublic(); // Make the file publicly accessible after upload
+                    console.log(`Uploaded model ${asset.Title} to Firebase Storage`);
+                });
+                uploadPromises.push(uploadPromise);
+            } catch (error) {
+                console.error(`Failed to download or start upload for model ${asset.Title}:`, error);
+                continue; // Skip this asset if download fails
+            }
+        } else {
+            console.log(`Model ${asset.Title} already exists in Firebase Storage`);
+        }
+
+        // Generate embeddings for title and tags
+        const embeddingResult = await ai.models.embedContent({ model: "gemini-embedding-001", contents: [asset.Title] });
+        const embedding = embeddingResult.embeddings?.[0]?.values || [];
+
+
+        // Add asset metadata to Firestore batch
+        const assetWithUrl = {
+            ...asset,
+            storageUrl: file.publicUrl(), // Get the public URL
+            embedding: FieldValue.vector(embedding), // Add the embedding
+        };
+        batch.set(docRef, assetWithUrl);
+    }
+
+    // Wait for all file uploads to complete
+    await Promise.all(uploadPromises);
+    console.log('All model uploads are complete.');
+
+    // Commit the batch to Firestore
+    await batch.commit();
+    console.log(`${filteredAssets.length} models metadata saved to Firestore.`);
+
+}
+
+
+export async function GetModel(search: string, ai: GoogleGenAI): Promise<string> {
+    const db = getFirestore();
+
+    // Generate embedding for the search query
+    const embeddingResult = await ai.models.embedContent({ model: "gemini-embedding-001", contents: [search] });
+    const searchEmbedding = embeddingResult.embeddings?.[0]?.values;
+
+    if (!searchEmbedding) {
+        throw new Error('Failed to generate embedding for the search query.');
+    }
+
+    // Find the nearest model using vector search
+    const snapshot = await db.collection('models').findNearest({
+        distanceMeasure: 'COSINE',
+        vectorField: 'embedding',
+        queryVector: searchEmbedding,
+        limit: 1,
+    }).get();
+
+    if (snapshot.empty) {
+        throw new Error(`No model found for search term: "${search}"`);
+    }
+
+    const model = snapshot.docs[0].data() as PolyPizzaAsset & { storageUrl: string };
+    if (!model.storageUrl) {
+        throw new Error(`Model found for "${search}", but it has no storage URL.`);
+    }
+    return model.storageUrl;
 }
 export async function GetHdri(tags: string[]): Promise<string> {
     const db = getFirestore();

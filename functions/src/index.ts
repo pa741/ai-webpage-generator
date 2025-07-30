@@ -8,15 +8,17 @@
  */
 // gemini api key -> AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0
 
-import { onCall, Request } from "firebase-functions/https";
-import { GoogleGenAI, FunctionDeclaration, Type, Content } from "@google/genai";
+import { onCall, onRequest, Request } from "firebase-functions/https";
+import { GoogleGenAI, FunctionDeclaration, Type, Content, } from "@google/genai";
 import { getRemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
 import { initializeApp } from "firebase-admin/app";
-import { GetHdri, GetModel } from "./asset-manager";
+import { GetHdri, GetModel, LoadModels } from "./asset-manager";
 
 const ai = new GoogleGenAI({ apiKey: "AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0" });
+
 // 3abc7eff92ea4a8eb4d2e4af396e1aa9 -> poly.pizza
 const app = initializeApp();
+
 
 async function GetConfig(headers: Request): Promise<ServerConfig> {
     const remoteConfig = getRemoteConfig(app);
@@ -38,11 +40,18 @@ async function GetConfig(headers: Request): Promise<ServerConfig> {
         referer: headers.get('Referer') || '',
     });
 
+
     return config;
 }
 
 
-
+export const LoadPolyPizzaModels = onRequest({
+    region: "europe-southwest1"
+    //, cors:[/groots.es$/]
+}, async (request) => {
+    const models = await LoadModels(ai);
+    return models;
+});
 
 
 export const generateContent = onCall({
@@ -78,19 +87,7 @@ export const generateContent = onCall({
     return fullResponse;
 
 })
-/*
 
-
-const getHdriEnviroment = async (search: string): Promise<string> => {
-
-    return "";
-}
-const getGLTFModel = async (search: string): Promise<string> => {
-    return "";
-}
-
-
-*/
 
 // Tool definitions for the LLM
 /*
@@ -132,7 +129,7 @@ async function executeTool(toolName: string, args: any): Promise<string> {
         case "GetHdri":
             return await GetHdri(args.tags);
         case "GetModel":
-            return await GetModel(args.search);
+            return await GetModel(args.search, ai);
         default:
             throw new Error(`Unknown tool: ${toolName}`);
     }
@@ -157,7 +154,7 @@ export const createScene = onCall({
         model: model,
         config: {
             systemInstruction: prompt,
-            tools: [{ functionDeclarations: [getModelTool]}]
+            tools: [{ functionDeclarations: [getModelTool] }]
         },
         contents: [
             { role: "user", parts: [{ text: description }] }
