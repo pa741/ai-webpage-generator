@@ -152,21 +152,23 @@ export async function LoadModels(ai: GoogleGenAI) {
         // Check if the file already exists
         const [exists] = await file.exists();
         if (!exists) {
-            try {
-                // Download the model
-                const modelResponse = await axios.get(asset.Download, { responseType: 'arraybuffer' });
-                // Start the upload but don't wait for it to finish yet
-                const uploadPromise = file.save(modelResponse.data, {
-                    contentType: 'model/gltf-binary',
-                }).then(async () => {
-                    await file.makePublic(); // Make the file publicly accessible after upload
+            const downloadAndUploadPromise = (async () => {
+                try {
+                    // Download the model
+                    const modelResponse = await axios.get(asset.Download, { responseType: 'arraybuffer' });
+                    // Upload the model
+                    await file.save(modelResponse.data, {
+                        contentType: 'model/gltf-binary',
+                    });
+                    // Make the file public
+                    await file.makePublic();
                     console.log(`Uploaded model ${asset.Title} to Firebase Storage`);
-                });
-                uploadPromises.push(uploadPromise);
-            } catch (error) {
-                console.error(`Failed to download or start upload for model ${asset.Title}:`, error);
-                continue; // Skip this asset if download fails
-            }
+                } catch (error) {
+                    console.error(`Failed to download or upload model ${asset.Title}:`, error);
+                    // We don't rethrow the error, so Promise.all won't fail for a single failed model.
+                }
+            })();
+            uploadPromises.push(downloadAndUploadPromise);
         } else {
             console.log(`Model ${asset.Title} already exists in Firebase Storage`);
         }
