@@ -2,6 +2,11 @@ const { GoogleGenAI } = require('@google/genai');
 const admin = require('firebase-admin');
 const axios = require('axios');
 const { FieldValue, getFirestore } = require('firebase-admin/firestore');
+const OpenAI = require("openai");
+const client = new OpenAI({
+    apiKey: "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"
+});
+
 
 // Initialize Firebase Admin with your service account
 //const serviceAccount = require('../../credential.json');
@@ -60,13 +65,12 @@ async function LoadModels(ai) {
     const storage = admin.storage();
     const bucket = storage.bucket();
     const db = getFirestore();
-    const batch = db.batch();
 
     let i = 0;
     const uploadPromises = [];
-    
+
     console.log('\nStarting to process models...');
-    
+
     const chunkSize = 100;
     for (let i = 0; i < filteredAssets.length; i += chunkSize) {
         const chunk = filteredAssets.slice(i, i + chunkSize);
@@ -108,11 +112,17 @@ async function LoadModels(ai) {
         const maxRetries = 5;
         let delay = 30000; // Start with 30 seconds
 
-        const titles = chunk.map(asset => asset.Title);
+        const titles = chunk.map(asset => asset.Title + ' ' + asset.Tags.join(', '));
 
         while (!success && retries < maxRetries) {
             try {
-                embeddingResult = await ai.models.embedContent({ model: "gemini-embedding-001", contents: titles });
+
+
+                let response = await client.embeddings.create({
+                    model: "text-embedding-3-small",
+                    input: titles
+                });
+                embeddingResult = response.data.map(item => item.embedding);
                 success = true;
             } catch (error) {
                 if (error.message && error.message.includes('429')) { // Check for rate limit error
@@ -132,13 +142,14 @@ async function LoadModels(ai) {
             console.error(`✗ Failed to generate embeddings for chunk after ${maxRetries} retries.`);
         }
 
-        const embeddings = embeddingResult?.embeddings || [];
+        const embeddings = embeddingResult || [];
+        const batch = db.batch();
 
         // Add asset metadata to Firestore batch
         chunk.forEach((asset, index) => {
             const docRef = db.collection('models').doc(asset.ID);
             const file = bucket.file(`models/${asset.ID}.glb`);
-            const embedding = embeddings[index]?.values;
+            const embedding = embeddings[index];
 
             const assetWithUrl = {
                 ...asset,
@@ -156,6 +167,9 @@ async function LoadModels(ai) {
         if (success) {
             console.log(`✓ Prepared metadata for chunk.`);
         }
+        await batch.commit();
+
+
     }
 
     console.log('\nWaiting for all uploads to complete...');
@@ -164,8 +178,8 @@ async function LoadModels(ai) {
     console.log('All model uploads are complete.');
 
     console.log('Committing metadata to Firestore...');
+
     // Commit the batch to Firestore
-    await batch.commit();
     console.log(`${filteredAssets.length} models metadata saved to Firestore.`);
 }
 
@@ -174,11 +188,11 @@ async function runLoadModels() {
         console.log('=== Starting to load models locally ===');
         console.log('This may take a while as it processes thousands of models.');
         console.log('You can safely interrupt with Ctrl+C if needed.\n');
-        
+
         const startTime = Date.now();
         await LoadModels(ai);
         const endTime = Date.now();
-        
+
         console.log(`\n=== Completed successfully in ${Math.round((endTime - startTime) / 1000)} seconds ===`);
         process.exit(0);
     } catch (error) {

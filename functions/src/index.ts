@@ -8,11 +8,13 @@
  */
 // gemini api key -> AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0
 
-import { onCall, onRequest, Request } from "firebase-functions/https";
+import { onCall,  Request } from "firebase-functions/https";
 import { GoogleGenAI, FunctionDeclaration, Type, Content, } from "@google/genai";
 import { getRemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
 import { initializeApp } from "firebase-admin/app";
-import { GetHdri, GetModel, LoadModels } from "./asset-manager";
+import { GetHdri, GetModel } from "./asset-manager";
+
+
 
 const ai = new GoogleGenAI({ apiKey: "AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0" });
 
@@ -45,13 +47,6 @@ async function GetConfig(headers: Request): Promise<ServerConfig> {
 }
 
 
-export const LoadPolyPizzaModels = onRequest({
-    region: "europe-southwest1"
-    //, cors:[/groots.es$/]
-}, async (request) => {
-    const models = await LoadModels(ai);
-    return models;
-});
 
 
 export const generateContent = onCall({

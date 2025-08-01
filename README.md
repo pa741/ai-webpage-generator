@@ -13,5 +13,6 @@
    -  Styles -- Consitency across session
    -  Generic HTML component - Allows the llm instruct another llm to focus on a secion of the page. -> Use cases: creating scripts that require certain html elements to be present. That way the llm can create only those elements and the script. It can also use other components to create a more complex page.
    -  ThreeCanvas -- 3D Canvas
+   -  Shader Component -- Allows the 3d canvas to create shaders
 - UserInfo
   - Tell the llm the user's language, keep in mind that the url may be for a specific language  

@@ -1,10 +1,13 @@
 
 import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
-import { FieldValue, getFirestore } from 'firebase-admin/firestore';
-import * as admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 
 
+import OpenAI from 'openai';
+const client = new OpenAI({
+    apiKey: "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"
+});
 interface HdriAsset {
     name: string;
     type: number;
@@ -77,8 +80,6 @@ export async function LoadHdris() {
 
 }
 
-
-
 interface PolyPizzaAsset {
     ID: string;
     Title: string;
@@ -96,114 +97,13 @@ interface PolyPizzaAsset {
     Licence: string;
     Animated: boolean;
 }
-export async function LoadModels(ai: GoogleGenAI) {
-    //https://api.poly.pizza/v1/user/Poly%20by%20Google
-    const allAssets: PolyPizzaAsset[] = [];
-    let page = -1;
-    let hasMorePages = true;
-
-    while (hasMorePages) {
-        try {
-            page++;
-
-            const response = await axios.get<{ models: PolyPizzaAsset[] }>(`https://api.poly.pizza/v1/user/Poly%20by%20Google?page=${page}`, {
-                headers: {
-                    'x-auth-token': '3abc7eff92ea4a8eb4d2e4af396e1aa9' // poly.pizza api key
-                }
-            });
-
-            if (response.status !== 200) {
-                continue;
-            }
-            const models = response.data.models;
-            console.log(`Loaded ${models.length} models from page ${page}`);
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limit to avoid hitting API limits
-            allAssets.push(...models);
-
-            if (models.length < 32) {
-                hasMorePages = false;
-            }
-        } catch (error) {
-            console.error(`Error loading models from page ${page}:`, error);
-            continue; // Skip this page and try the next one
-        }
-    }
-
-    // filter out models with more than 10000 triangles
-    const filteredAssets = allAssets.filter(asset => asset['Tri Count'] < 10000);
-
-
-    const storage = admin.storage();
-    const bucket = storage.bucket();
-    const db = getFirestore();
-    const batch = db.batch();
-
-    let i = 0;
-    const uploadPromises: Promise<void>[] = [];
-    for (const asset of filteredAssets) {
-        i++;
-        if (i % 10 === 0) {
-            console.log(`Processing model ${i} of ${filteredAssets.length}...`);
-        }
-        const fileName = `models/${asset.ID}.glb`;
-        const file = bucket.file(fileName);
-        const docRef = db.collection('models').doc(asset.ID);
-
-        // Check if the file already exists
-        const [exists] = await file.exists();
-        if (!exists) {
-            const downloadAndUploadPromise = (async () => {
-                try {
-                    // Download the model
-                    const modelResponse = await axios.get(asset.Download, { responseType: 'arraybuffer' });
-                    // Upload the model
-                    await file.save(modelResponse.data, {
-                        contentType: 'model/gltf-binary',
-                    });
-                    // Make the file public
-                    await file.makePublic();
-                    console.log(`Uploaded model ${asset.Title} to Firebase Storage`);
-                } catch (error) {
-                    console.error(`Failed to download or upload model ${asset.Title}:`, error);
-                    // We don't rethrow the error, so Promise.all won't fail for a single failed model.
-                }
-            })();
-            uploadPromises.push(downloadAndUploadPromise);
-        } else {
-            console.log(`Model ${asset.Title} already exists in Firebase Storage`);
-        }
-
-        // Generate embeddings for title and tags
-        const embeddingResult = await ai.models.embedContent({ model: "gemini-embedding-001", contents: [asset.Title] });
-        const embedding = embeddingResult.embeddings?.[0]?.values || [];
-
-
-        // Add asset metadata to Firestore batch
-        const assetWithUrl = {
-            ...asset,
-            storageUrl: file.publicUrl(), // Get the public URL
-            embedding: FieldValue.vector(embedding), // Add the embedding
-        };
-        batch.set(docRef, assetWithUrl);
-    }
-
-    // Wait for all file uploads to complete
-    await Promise.all(uploadPromises);
-    console.log('All model uploads are complete.');
-
-    // Commit the batch to Firestore
-    await batch.commit();
-    console.log(`${filteredAssets.length} models metadata saved to Firestore.`);
-
-}
-
 
 export async function GetModel(search: string, ai: GoogleGenAI): Promise<string> {
     const db = getFirestore();
 
     // Generate embedding for the search query
-    const embeddingResult = await ai.models.embedContent({ model: "gemini-embedding-001", contents: [search] });
-    const searchEmbedding = embeddingResult.embeddings?.[0]?.values;
+    const embeddingResult = await client.embeddings.create({ model: "text-embedding-3-small", input: search });
+    const searchEmbedding = embeddingResult.data[0]?.embedding;
 
     if (!searchEmbedding) {
         throw new Error('Failed to generate embedding for the search query.');
