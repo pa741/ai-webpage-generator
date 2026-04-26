@@ -3,7 +3,7 @@ import type { PageLoad, PageServerLoad } from "./$types";
 import { compileAst, type Config } from 'tailwindcss';
 import tailwindcss from '@tailwindcss/postcss';
 import postcss from 'postcss';
-import twconfig from '../../../tailwind.config.cjs';
+import twconfig from '../../../tailwind.config.js';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import console from "node:console";

@@ -60,7 +60,7 @@ async function handleImageRequest(event: RequestEvent, pathname: string): Promis
         const docRef = await addDoc(collection(db, "imageAccessLog"), dataToSave);
     } catch (e) {
         console.error("Error adding document to Firestore: ", e);
-        // Decide if you want to fail the request or just log. For now, just log.
+
     }
     
 

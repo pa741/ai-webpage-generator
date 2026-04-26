@@ -8,6 +8,7 @@
   import { page } from "$app/state";
   import { onMount } from "svelte";
   import TextContent from "../Components/TextContent.svelte";
+  import GoogleLogin from "../Components/GoogleLogin.svelte";
   import ThreeCanvas from "../Components/ThreeCanvas.svelte";
   let token = data.token;
   /*
@@ -22,6 +23,14 @@
     }
   });
 </script>
+
+<svelte:head>
+  {#if data.componentScripts}
+    {#each data.componentScripts as scriptRef (scriptRef.id)}
+      <script src={scriptRef.src} defer></script>
+    {/each}
+  {/if}
+</svelte:head>
 
 <div class="app">
   {#if token}

@@ -4,11 +4,15 @@ import type { ChatCompletion } from '@cerebras/cerebras_cloud_sdk/resources.mjs'
 import { Runware } from '@runware/sdk-js';
 import Groq from "groq-sdk";
 import OpenAI from 'openai';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
     CEREBRAS_API_KEY,
     GROQ_API_KEY,
     RUNWARE_API_KEY
 } from '$env/static/private';
+import { env } from '$env/dynamic/private';
+import { PUBLIC_FIREBASE_PROJECT_ID } from '$env/static/public';
 import { getRemoteConfig, RemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
 import app from '../firebase_admin';
 
@@ -22,6 +26,150 @@ const groq = new Groq({
 });
 
 const runware = new Runware({ apiKey: RUNWARE_API_KEY });
+const MCP_REGION = 'europe-southwest1';
+
+interface ReusableComponentSummary {
+    id: string;
+    shortDeck: string;
+    gsPath: string;
+}
+
+function resolveMcpUrl(request: Request): URL | null {
+    const configuredUrl = env.MCP_ENDPOINT?.trim();
+    if (configuredUrl) {
+        try {
+            return new URL(configuredUrl);
+        } catch {
+            console.warn('MCP_ENDPOINT is set but invalid:', configuredUrl);
+        }
+    }
+
+    if (PUBLIC_FIREBASE_PROJECT_ID) {
+        return new URL(`https://${MCP_REGION}-${PUBLIC_FIREBASE_PROJECT_ID}.cloudfunctions.net/mcp`);
+    }
+
+    try {
+        const baseUrl = new URL(request.url);
+        return new URL('/mcp', `${baseUrl.protocol}//${baseUrl.host}`);
+    } catch {
+        return null;
+    }
+}
+
+async function withMcpClient<T>(request: Request, action: (client: Client) => Promise<T>): Promise<T | null> {
+    const mcpUrl = resolveMcpUrl(request);
+    if (!mcpUrl) {
+        return null;
+    }
+
+    const authorizationHeader = request.headers.get("authorization");
+    const transport = new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: authorizationHeader
+            ? {
+                headers: {
+                    Authorization: authorizationHeader
+                }
+            }
+            : undefined
+    });
+    const client = new Client({
+        name: 'ai-webpage-generator',
+        version: '1.0.0'
+    });
+
+    try {
+        await client.connect(transport);
+        return await action(client);
+    } catch (error) {
+        console.error('Failed to connect/call MCP server:', error);
+        return null;
+    } finally {
+        try {
+            await client.close();
+        } catch {
+            // Ignore close errors from short-lived MCP requests.
+        }
+    }
+}
+
+function parseToolJson(content: unknown): unknown {
+    if (!Array.isArray(content)) {
+        return null;
+    }
+
+    const texts = content
+        .filter((item): item is { type?: string; text?: string } => Boolean(item && typeof item === 'object'))
+        .filter((item) => item.type === 'text' && typeof item.text === 'string')
+        .map((item) => item.text as string)
+        .join('\n')
+        .trim();
+
+    if (!texts) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(texts);
+    } catch {
+        return null;
+    }
+}
+
+function normalizeComponentSummaries(value: unknown): ReusableComponentSummary[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+        .map((item) => ({
+            id: typeof item.id === 'string' ? item.id : '',
+            shortDeck: typeof item.shortDeck === 'string' ? item.shortDeck : '',
+            gsPath: typeof item.gsPath === 'string' ? item.gsPath : ''
+        }))
+        .filter((item) => Boolean(item.id));
+}
+
+async function getMcpComponentContext(request: Request, description: string): Promise<ReusableComponentSummary[]> {
+    const components = await withMcpClient(request, async (client) => {
+        const purposeResponse = await client.callTool({
+            name: 'GetComponents',
+            arguments: {
+                purpose: description.slice(0, 500)
+            }
+        });
+
+        const purposeResults = normalizeComponentSummaries(parseToolJson(purposeResponse.content));
+        if (purposeResults.length > 0) {
+            return purposeResults;
+        }
+
+        const allResponse = await client.callTool({
+            name: 'GetAllComponents',
+            arguments: {}
+        });
+        return normalizeComponentSummaries(parseToolJson(allResponse.content));
+    });
+
+    return components ?? [];
+}
+
+function buildComponentPromptContext(components: ReusableComponentSummary[]): string {
+    if (components.length === 0) {
+        return '';
+    }
+
+    const lines = components.slice(0, 20).map((component) => {
+        const desc = component.shortDeck || 'Reusable web component';
+        return `- ${component.id}: ${desc}`;
+    });
+
+    return [
+        'Reusable Web Components available via MCP (already loaded as scripts on the client):',
+        ...lines,
+        'When useful, include these custom element tags in your HTML using their component id as the tag name (for example: <my-component></my-component>).'
+    ].join('\n');
+}
 
 
 async function GetConfig(request: Request): Promise<ServerConfig> {
@@ -239,25 +387,21 @@ async function RequestHtml(request: Request, description: string) {
     const model = config.getString('html_generator_model');
     trackAIInteraction('website_generation_request', model);
 
+    const reusableComponents = await getMcpComponentContext(request, description);
+    const componentPromptContext = buildComponentPromptContext(reusableComponents);
+    const generationInput = componentPromptContext
+        ? `${description}\n\n${componentPromptContext}`
+        : description;
+
     try {
         let response = await client.chat.completions.create({
-            messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
+            messages: [{ role: "system", content: systemPrompt }, { role: "user", content: generationInput }],
             //model: "llama-4-scout-17b-16e-instruct"
             //model: "qwen-3-32b",
             model: model,
 
         })
-        //let response = await router.chat.completions.create({
-        //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
-        //    //model: "llama-4-scout-17b-16e-instruct"
-        //    model: "thudm/glm-4-32b:free",
-        //})
-        //let response = await groq.chat.completions.create({
-        //    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: description }],
-        //    model: "qwen-qwq-32b",
-        //    reasoning_format: "hidden"
-        //
-        //})
+
         if (!response.choices || (response.choices as any).length === 0 || !(response.choices as any)[0]?.message.content) {
             trackWebsiteGeneration(description, false);
             return "<!-- Error generating HTML: No content returned -->";

@@ -23,11 +23,11 @@
   "dependencies": {
     "@cerebras/cerebras_cloud_sdk": "^1.35.0",
     "@cloudflare/turnstile-firebase-app-check": "^0.0.5",
-    "@google/genai": "^1.5.0",
-    "@mistralai/mistralai": "^1.7.1",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@google/genai": "^1.50.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@runware/sdk-js": "^1.1.40",
     "@tailwindcss/postcss": "^4.1.11",
+    "ai": "^6.0.168",
     "firebase": "^11.9.1",
     "firebase-admin": "^13.4.0",
     "firebase-functions": "^6.3.2",
@@ -36,6 +36,7 @@
     "openai": "^5.2.0",
     "postcss": "^8.5.6",
     "svelte-turnstile": "^0.11.0",
-    "tailwindcss": "^4.1.11"
+    "tailwindcss": "^4.1.11",
+    "zod": "^3.25.76"
   }
 }

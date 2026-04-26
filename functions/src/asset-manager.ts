@@ -3,11 +3,6 @@ import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
 import { getFirestore } from 'firebase-admin/firestore';
 
-
-import OpenAI from 'openai';
-const client = new OpenAI({
-    apiKey: "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"
-});
 interface HdriAsset {
     name: string;
     type: number;
@@ -98,16 +93,35 @@ interface PolyPizzaAsset {
     Animated: boolean;
 }
 
+async function createEmbedding(input: string): Promise<number[]> {
+    const apiKey = process.env.OPENAI_API_KEY || "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";
+    const embeddingResponse = await axios.post<{ data: Array<{ embedding: number[] }> }>(
+        "https://api.openai.com/v1/embeddings",
+        {
+            model: "text-embedding-3-small",
+            input,
+        },
+        {
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+        }
+    );
+
+    const embedding = embeddingResponse.data.data[0]?.embedding;
+    if (!embedding) {
+        throw new Error('Failed to generate embedding for the search query.');
+    }
+
+    return embedding;
+}
+
 export async function GetModel(search: string, ai: GoogleGenAI): Promise<string> {
     const db = getFirestore();
 
     // Generate embedding for the search query
-    const embeddingResult = await client.embeddings.create({ model: "text-embedding-3-small", input: search });
-    const searchEmbedding = embeddingResult.data[0]?.embedding;
-
-    if (!searchEmbedding) {
-        throw new Error('Failed to generate embedding for the search query.');
-    }
+    const searchEmbedding = await createEmbedding(search);
 
     // Find the nearest model using vector search
     const snapshot = await db.collection('models').findNearest({
