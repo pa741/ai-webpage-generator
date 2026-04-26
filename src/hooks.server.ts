@@ -12,7 +12,7 @@ declare global {
     }
 }
 
-import { GenerateImageFromRoute } from '$lib/AI/PageGenerator';
+import { GenerateImageFromRoute, HandleAction } from '$lib/AI/PageGenerator';
 import { PRIVATE_TURNSTILE_SECRET_KEY } from '$env/static/private';
 import { logServerSideEvent } from '$lib/server_analytics';
 import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
@@ -135,6 +135,14 @@ export const handle: Handle = async ({ event, resolve }) => {
             });
         }
         return await handleImageRequest(event, pathname);
+    }
+
+    const method = event.request.method;
+    const isAppCheckPost = Boolean(
+        event.request.headers.get('x-__session') || event.request.headers.get('__session')
+    );
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && !isAppCheckPost) {
+        return await HandleAction(event.request);
     }
 
     const response = await resolve(event);

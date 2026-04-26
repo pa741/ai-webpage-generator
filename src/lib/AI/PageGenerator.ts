@@ -1,37 +1,71 @@
-import { trackAIInteraction, trackCustomEvent, trackError, trackWebsiteGeneration } from '$lib/analytics';
+import { trackAIInteraction, trackError, trackWebsiteGeneration } from '$lib/analytics';
 import Cerebras from '@cerebras/cerebras_cloud_sdk';
-import type { ChatCompletion } from '@cerebras/cerebras_cloud_sdk/resources.mjs';
 import { Runware } from '@runware/sdk-js';
-import Groq from "groq-sdk";
-import OpenAI from 'openai';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
     CEREBRAS_API_KEY,
-    GROQ_API_KEY,
     RUNWARE_API_KEY
 } from '$env/static/private';
 import { env } from '$env/dynamic/private';
 import { PUBLIC_FIREBASE_PROJECT_ID } from '$env/static/public';
-import { getRemoteConfig, RemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
+import { getRemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
 import app from '../firebase_admin';
 
-const client = new Cerebras({
-    apiKey: CEREBRAS_API_KEY,
-});
-
-const groq = new Groq({
-    apiKey: GROQ_API_KEY,
-
-});
-
+const client = new Cerebras({ apiKey: CEREBRAS_API_KEY });
 const runware = new Runware({ apiKey: RUNWARE_API_KEY });
-const MCP_REGION = 'europe-southwest1';
 
-interface ReusableComponentSummary {
-    id: string;
-    shortDeck: string;
-    gsPath: string;
+const MCP_REGION = 'europe-southwest1';
+const MAX_TOOL_LOOP_ITERATIONS = 8;
+
+const READ_ONLY_DICTIONARY_TOOLS = new Set([
+    'GetWord',
+    'SearchWords',
+    'GetRandomWord',
+    'GetWordOfTheDay',
+    'GetFavoriteWords'
+]);
+
+const COMPONENT_TOOLS = new Set([
+    'GetAllComponents',
+    'GetComponents',
+    'CreateComponent',
+    'UpdateComponent'
+]);
+
+interface CerebrasTool {
+    type: 'function';
+    function: {
+        name: string;
+        description?: string;
+        parameters: Record<string, unknown>;
+    };
+}
+
+interface CerebrasMessage {
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content: string | null;
+    name?: string;
+    tool_call_id?: string;
+    tool_calls?: Array<{
+        id: string;
+        type: 'function';
+        function: { name: string; arguments: string };
+    }>;
+}
+
+interface PageSection {
+    component?: string;
+    props?: Record<string, unknown>;
+    content?: string;
+    children?: PageSection[];
+}
+
+interface PageSpec {
+    title?: string;
+    description?: string;
+    sections?: PageSection[];
+    [key: string]: unknown;
 }
 
 function resolveMcpUrl(request: Request): URL | null {
@@ -65,27 +99,20 @@ async function withMcpClient<T>(request: Request, action: (client: Client) => Pr
     const authorizationHeader = request.headers.get("authorization");
     const transport = new StreamableHTTPClientTransport(mcpUrl, {
         requestInit: authorizationHeader
-            ? {
-                headers: {
-                    Authorization: authorizationHeader
-                }
-            }
+            ? { headers: { Authorization: authorizationHeader } }
             : undefined
     });
-    const client = new Client({
-        name: 'ai-webpage-generator',
-        version: '1.0.0'
-    });
+    const mcp = new Client({ name: 'ai-webpage-generator', version: '1.0.0' });
 
     try {
-        await client.connect(transport);
-        return await action(client);
+        await mcp.connect(transport);
+        return await action(mcp);
     } catch (error) {
         console.error('Failed to connect/call MCP server:', error);
         return null;
     } finally {
         try {
-            await client.close();
+            await mcp.close();
         } catch {
             // Ignore close errors from short-lived MCP requests.
         }
@@ -111,315 +138,473 @@ function parseToolJson(content: unknown): unknown {
     try {
         return JSON.parse(texts);
     } catch {
-        return null;
+        return texts;
     }
 }
 
-function normalizeComponentSummaries(value: unknown): ReusableComponentSummary[] {
-    if (!Array.isArray(value)) {
-        return [];
-    }
-
-    return value
-        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-        .map((item) => ({
-            id: typeof item.id === 'string' ? item.id : '',
-            shortDeck: typeof item.shortDeck === 'string' ? item.shortDeck : '',
-            gsPath: typeof item.gsPath === 'string' ? item.gsPath : ''
-        }))
-        .filter((item) => Boolean(item.id));
-}
-
-async function getMcpComponentContext(request: Request, description: string): Promise<ReusableComponentSummary[]> {
-    const components = await withMcpClient(request, async (client) => {
-        const purposeResponse = await client.callTool({
-            name: 'GetComponents',
-            arguments: {
-                purpose: description.slice(0, 500)
+async function listMcpToolsAsCerebras(mcp: Client, allow?: (name: string) => boolean): Promise<CerebrasTool[]> {
+    const listed = await mcp.listTools();
+    const tools = (listed?.tools ?? []) as Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+    return tools
+        .filter((tool) => !allow || allow(tool.name))
+        .map((tool) => ({
+            type: 'function' as const,
+            function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: (tool.inputSchema && typeof tool.inputSchema === 'object')
+                    ? tool.inputSchema
+                    : { type: 'object', properties: {} }
             }
-        });
+        }));
+}
 
-        const purposeResults = normalizeComponentSummaries(parseToolJson(purposeResponse.content));
-        if (purposeResults.length > 0) {
-            return purposeResults;
+interface ToolLoopResult {
+    finalText: string;
+    toolInvocations: Array<{ name: string; args: Record<string, unknown>; result: unknown }>;
+}
+
+async function runMcpToolLoop(input: {
+    request: Request;
+    model: string;
+    systemPrompt: string;
+    userPrompt: string;
+    allowTool?: (name: string) => boolean;
+    responseFormat?: 'text' | 'json_object';
+}): Promise<ToolLoopResult> {
+    const result: ToolLoopResult = { finalText: '', toolInvocations: [] };
+
+    const outcome = await withMcpClient(input.request, async (mcp) => {
+        const tools = await listMcpToolsAsCerebras(mcp, input.allowTool);
+
+        const messages: CerebrasMessage[] = [
+            { role: 'system', content: input.systemPrompt },
+            { role: 'user', content: input.userPrompt }
+        ];
+
+        for (let iteration = 0; iteration < MAX_TOOL_LOOP_ITERATIONS; iteration += 1) {
+            const completion: any = await client.chat.completions.create({
+                messages: messages as any,
+                model: input.model,
+                tools: tools as any,
+                tool_choice: 'auto',
+                ...(input.responseFormat === 'json_object'
+                    ? { response_format: { type: 'json_object' } }
+                    : {})
+            });
+
+            const choice = completion?.choices?.[0]?.message;
+            if (!choice) {
+                break;
+            }
+
+            const toolCalls = choice.tool_calls as CerebrasMessage['tool_calls'] | undefined;
+            if (toolCalls && toolCalls.length > 0) {
+                messages.push({
+                    role: 'assistant',
+                    content: choice.content ?? null,
+                    tool_calls: toolCalls
+                });
+
+                for (const call of toolCalls) {
+                    const name = call.function.name;
+                    let args: Record<string, unknown> = {};
+                    try {
+                        args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
+                    } catch {
+                        args = {};
+                    }
+
+                    let toolResultText: string;
+                    try {
+                        const toolResponse = await mcp.callTool({ name, arguments: args });
+                        const parsed = parseToolJson(toolResponse.content);
+                        result.toolInvocations.push({ name, args, result: parsed });
+                        toolResultText = typeof parsed === 'string'
+                            ? parsed
+                            : JSON.stringify(parsed ?? null);
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : 'Unknown tool error';
+                        result.toolInvocations.push({ name, args, result: { error: message } });
+                        toolResultText = JSON.stringify({ error: message });
+                    }
+
+                    messages.push({
+                        role: 'tool',
+                        tool_call_id: call.id,
+                        name,
+                        content: toolResultText
+                    });
+                }
+
+                continue;
+            }
+
+            result.finalText = typeof choice.content === 'string' ? choice.content : '';
+            return result;
         }
 
-        const allResponse = await client.callTool({
-            name: 'GetAllComponents',
-            arguments: {}
-        });
-        return normalizeComponentSummaries(parseToolJson(allResponse.content));
+        return result;
     });
 
-    return components ?? [];
+    return outcome ?? result;
 }
-
-function buildComponentPromptContext(components: ReusableComponentSummary[]): string {
-    if (components.length === 0) {
-        return '';
-    }
-
-    const lines = components.slice(0, 20).map((component) => {
-        const desc = component.shortDeck || 'Reusable web component';
-        return `- ${component.id}: ${desc}`;
-    });
-
-    return [
-        'Reusable Web Components available via MCP (already loaded as scripts on the client):',
-        ...lines,
-        'When useful, include these custom element tags in your HTML using their component id as the tag name (for example: <my-component></my-component>).'
-    ].join('\n');
-}
-
 
 async function GetConfig(request: Request): Promise<ServerConfig> {
     const remoteConfig = getRemoteConfig(app);
-    console.log('Fetching remote config...');
-    console.log('Remote config:', remoteConfig);
-    //list methods of remoteConfig
-    let methods = Object.getOwnPropertyNames(Object.getPrototypeOf(remoteConfig));
-    console.log('Remote config methods:', methods);
-
-    const template = await remoteConfig.getServerTemplate()
-    console.log('Remote config template:', template);
-    //await template.load();
-
-
-    const config = template.evaluate({
+    const template = await remoteConfig.getServerTemplate();
+    return template.evaluate({
         platform: request.headers.get('Sec-CH-UA-Platform') || 'unknown',
         userAgent: request.headers.get('User-Agent') || 'unknown',
         acceptLanguage: request.headers.get('Accept-Language') || 'en-US',
-        referer: request.headers.get('Referer') || '',
+        referer: request.headers.get('Referer') || ''
+    });
+}
+
+function getConfigString(config: ServerConfig, key: string, fallback?: string): string {
+    const value = config.getString(key);
+    if (value && value.trim()) {
+        return value;
+    }
+    if (typeof fallback === 'string') {
+        return fallback;
+    }
+    throw new Error(`Remote config key '${key}' is missing.`);
+}
+
+const DEFAULT_DESIGNER_PROMPT = `You are the page designer for a dictionary website. Every request relates to dictionary entries (words, definitions, etymology, usage, favorites).
+
+Your job is one thing: produce a JSON page spec for the route below.
+
+Rules:
+1. Infer what dictionary-related page the user wants based on the route.
+2. Inspect available reusable components by calling GetAllComponents or GetComponents. Prefer using existing components over inventing new markup.
+3. If a needed component does not exist, call CreateComponent with a clear id (kebab-case) and a precise prompt describing the component's responsibility, props, and behavior. Components persist across page loads, so reuse is critical for layout stability.
+4. Use read-only data tools (GetWord, SearchWords, GetWordOfTheDay) only when the page content depends on real data; otherwise leave the spec abstract enough for the renderer to fill it in.
+5. When you are done with tools, return ONLY a JSON object (no prose, no code fences) shaped like:
+{
+  "title": string,
+  "description": string,
+  "sections": [
+    { "component": "<component-id>", "props": {...}, "children": [...] } |
+    { "content": "<plain text or HTML hint>" }
+  ]
+}
+Each section may either reference a component by id or describe inline content. Children are nested sections.`;
+
+const DEFAULT_RENDERER_PROMPT = `You are the page renderer for a dictionary website. You receive a JSON page spec and a list of available custom-element components, and you emit a single raw HTML fragment (no <html>, <head>, or <body>; only what would go inside <body>).
+
+Rules:
+- Use Tailwind CSS utility classes for layout and styling.
+- Whenever a section references a component id, render it as <component-id ...props></component-id>. Pass props as kebab-case attributes; non-string props as JSON-encoded attribute values.
+- For inline content sections, emit semantic HTML.
+- For images, use descriptive relative URLs (e.g. /images/words/serendipity-illustration.png).
+- For internal links, use descriptive relative URLs.
+- Output ONLY the HTML fragment. No markdown fences, no commentary.`;
+
+const DEFAULT_ACTION_PROMPT = `You are the action runner for a dictionary website. Every non-GET request expresses an intent the user wants executed against the dictionary domain.
+
+You receive: the HTTP method, route, request body (JSON), and the authenticated user context (if any). Pick exactly the tool that fulfills the user's intent and call it. Never ask clarifying questions.
+
+After the tool finishes, you MUST return ONLY a JSON object (no prose, no code fences). If the request body contains an "outputFormat" field, the JSON you return MUST conform to that shape description. If "outputFormat" is missing, return { "ok": boolean, "message": string, "data": any }.
+
+If the tool fails (including auth errors), still return JSON conforming to outputFormat where possible, with ok=false and a message explaining what went wrong.`;
+
+export interface DesignedPage {
+    pageSpec: PageSpec;
+    rawDesignerOutput: string;
+    usedComponentIds: string[];
+}
+
+export async function DesignPage(request: Request, route: string): Promise<DesignedPage> {
+    const config = await GetConfig(request);
+    const systemPrompt = getConfigString(config, 'page_designer_prompt', DEFAULT_DESIGNER_PROMPT);
+    const model = getConfigString(config, 'html_designer_model', 'qwen-3-32b');
+
+    trackAIInteraction('page_designer_request', model);
+
+    const allowTool = (name: string) => COMPONENT_TOOLS.has(name) || READ_ONLY_DICTIONARY_TOOLS.has(name);
+
+    const { finalText, toolInvocations } = await runMcpToolLoop({
+        request,
+        model,
+        systemPrompt,
+        userPrompt: JSON.stringify({ route }),
+        allowTool,
+        responseFormat: 'json_object'
     });
 
-    return config;
+    const pageSpec = parsePageSpec(finalText);
+    const used = collectComponentIds(pageSpec, toolInvocations);
+
+    return { pageSpec, rawDesignerOutput: finalText, usedComponentIds: used };
 }
-/*
-his webpage is a homepage for a modern, innovative, and user-friendly website. It should have a clean, contemporary design with a focus on usability and aesthetics.
-    
-    Content:
-- Generate a brief text introduction that mentions the following key points:
- - This website is generated using AI ran on Cerebras for instant speed generation.
- - It was made by Pablo De Groot, who can be contacted at pablo@groots.es
- - It uses the route of the page to generate the content, so any page can be generated dynamically and navigated to from other pages.
 
- Additionally, include a section that provides examples of the types of the pages that can be generated (/blog/pets/cats, /sports/formula-1/live, /products/electronics/smartphones, /contact, etc...). Do not use this specific list, but rather generate a list of plausible pages that could be generated dynamically based on the route.
-Every example should be a link to the page, and the link text should be descriptive of the page content. Use relative URLs (e.g./blog/pets/cats, etc.) without any domain or protocol.
-Add icons to the links to make them visually appealing, using Font Awesome or similar icon libraries. Use appropriate icons that match the content of each link (e.g., a user icon for /about, a blog icon for /blog, etc.).
-Style:
-- Dark mode design with a sleek, modern aesthetic.
-- In the style of a blog post, with a header, main content area, and footer.
-- Main content area should be centered. 
-- Use css animations to make the page visually appealing, such as hover effects on links and buttons.
+function parsePageSpec(rawText: string): PageSpec {
+    const text = stripCodeFence(rawText).trim();
+    if (!text) {
+        return {};
+    }
+    try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as PageSpec;
+        }
+    } catch {
+        // fall through
+    }
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+        try {
+            const parsed = JSON.parse(text.slice(start, end + 1));
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed as PageSpec;
+            }
+        } catch {
+            // fall through
+        }
+    }
+    return { description: text };
+}
 
-*/
+function stripCodeFence(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed.startsWith('```')) {
+        return trimmed;
+    }
+    return trimmed.replace(/^```[a-zA-Z]*\n?/, '').replace(/```\s*$/, '').trim();
+}
 
-export async function GenerateHomePage(request: Request) {
-    const config = await GetConfig(request);
-    const prompt = config.getString('home_page_prompt');
-    if (!prompt) {
-        throw new Error("Home page prompt not found in remote config");
+function collectComponentIds(
+    spec: PageSpec,
+    toolInvocations: Array<{ name: string; args: Record<string, unknown>; result: unknown }>
+): string[] {
+    const ids = new Set<string>();
+
+    const visit = (section: PageSection | undefined) => {
+        if (!section) return;
+        if (typeof section.component === 'string' && section.component.trim()) {
+            ids.add(section.component.trim());
+        }
+        section.children?.forEach(visit);
+    };
+    spec.sections?.forEach(visit);
+
+    for (const invocation of toolInvocations) {
+        if (invocation.name === 'CreateComponent' || invocation.name === 'UpdateComponent') {
+            const id = invocation.args?.id;
+            if (typeof id === 'string' && id.trim()) {
+                ids.add(id.trim());
+            }
+            const result = invocation.result as { id?: unknown } | null;
+            if (result && typeof result === 'object' && typeof (result as any).id === 'string') {
+                ids.add((result as any).id);
+            }
+        }
     }
 
-    return await RequestHtml(request, prompt);
+    return Array.from(ids);
 }
-/*
-/no_think You are an AI Image Description Generator. Your task is to interpret a descriptive URL route that points to an image and generate a rich, detailed textual description of what the image at that route could plausibly look like.
 
-The URL will provide clues through its path segments (folders) and filename (including the extension, though the extension itself is less important than the descriptive words).
+export async function RequestHtml(request: Request, pageSpec: PageSpec, usedComponentIds: string[]): Promise<string> {
+    const config = await GetConfig(request);
+    const systemPrompt = getConfigString(config, 'html_generator_prompt', DEFAULT_RENDERER_PROMPT);
+    const model = getConfigString(config, 'html_generator_model', 'qwen-3-32b');
+    trackAIInteraction('website_generation_request', model);
 
-Your goal is to:
+    const userPrompt = JSON.stringify({
+        pageSpec,
+        availableComponents: usedComponentIds
+    });
 
-Analyze the URL: Break down the URL into its constituent parts (e.g., domain/category/subcategory/filename.jpg). Identify keywords related to objects, scenes, attributes, actions, time of day, location, etc.
-Infer Context: Use the folder structure and filename to understand the likely context and subject matter of the image.
-Generate a Visual Description: Create a vivid description of the hypothetical image. Focus on:
-Main Subject(s): What is the central focus of the image?
-Setting/Environment: Where is the subject located? What is the background?
-Key Details & Attributes: Specific objects, colors, textures, lighting, weather conditions, mood, atmosphere.
-Possible Composition/Perspective: Is it likely a close-up, a wide shot, an aerial view, eye-level, etc.? (Make a reasonable assumption).
-Style (Implicit): Assume a photographic style unless the URL hints otherwise (e.g., illustration, drawing, abstract).
-Important Considerations:
+    try {
+        const response: any = await client.chat.completions.create({
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ],
+            model
+        });
 
-Be Plausible: The description should logically follow from the information in the URL.
-Be Creative but Grounded: Fill in reasonable details that aren't explicitly stated but make sense given the context.
-Focus on Visuals: Describe what one would see.
-Do NOT describe the URL string itself or the act of parsing. Describe the image.
+        const content = response?.choices?.[0]?.message?.content;
+        if (typeof content !== 'string' || !content.trim()) {
+            trackWebsiteGeneration(JSON.stringify(pageSpec), false);
+            return '<!-- Error generating HTML: No content returned -->';
+        }
 
-Example Input URL 1:
-/images/landscapes/mountains/snowy_peaks_sunrise_alps.jpg
+        trackWebsiteGeneration(JSON.stringify(pageSpec), true);
+        return content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    } catch (error) {
+        trackWebsiteGeneration(JSON.stringify(pageSpec), false);
+        console.error('Error generating HTML:', error);
+        return '<!-- Error generating HTML -->';
+    }
+}
 
-Example Output Description 1:
-"A breathtaking mountain landscape likely photographed in the Alps. Towering, sharp peaks are covered in pristine white snow, possibly with some exposed grey rock. The scene is illuminated by the warm, golden light of sunrise, casting long shadows and highlighting the textures of the snow and rock. The sky could be a mix of oranges, pinks, and purples near the horizon, fading into a clearer blue above. It's likely a wide shot, capturing the grandeur and scale of the mountains."
+export interface GeneratedPage {
+    prompt: string;
+    html: string;
+    pageSpec: PageSpec;
+    usedComponentIds: string[];
+}
 
-Example Input URL 2:
-/products/kitchen/appliances/red_vintage_toaster_on_marble_countertop.png
+export async function GenerateHtml(request: Request, route: string, _referer?: string | null): Promise<GeneratedPage> {
+    const designed = await DesignPage(request, route);
+    const html = await RequestHtml(request, designed.pageSpec, designed.usedComponentIds);
+    return {
+        prompt: designed.rawDesignerOutput,
+        html,
+        pageSpec: designed.pageSpec,
+        usedComponentIds: designed.usedComponentIds
+    };
+}
 
-Example Output Description 2:
-"A product shot focusing on a vintage-style toaster. The toaster is a vibrant red color, possibly with chrome accents, and has a classic, retro design. It's placed neatly on a clean, polished marble countertop, which might be white or a light grey with characteristic veining. The lighting is likely bright and even, designed to showcase the product's details and glossy finish. The image is likely a close-up or medium shot, focusing primarily on the toaster."
+export async function GenerateHomePage(request: Request): Promise<GeneratedPage> {
+    return GenerateHtml(request, '');
+}
 
-Example Input URL 3:
-/art/digital/sci-fi/cyborg_neon_city_rain_reflection.webp
-
-Example Output Description 3:
-"A digital art piece depicting a cyborg figure in a futuristic, neon-lit cityscape. The cyborg might have visible mechanical parts integrated with a human-like form, perhaps with glowing elements. The city is drenched in rain, causing the vibrant neon lights (pinks, blues, purples) from signs and buildings to reflect dramatically on wet streets and surfaces. The atmosphere is likely dark, moody, and Blade Runner-esque, with a focus on reflections and the interplay of light and shadow.
-
-*/
-
-async function GetImageDescriptionFromRoute(request: Request, route: string) {
-
-    //trackAIInteraction('image_description_generation_request', 'llama-3.3');
+async function GetImageDescriptionFromRoute(request: Request, route: string): Promise<string> {
     const config = await GetConfig(request);
     const systemPrompt = config.getString('image_description_prompt');
     const model = config.getString('image_description_model');
     trackAIInteraction('image_description_generation_request', model);
 
-    let response = await client.chat.completions.create({
-        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: route }],
-        model: model
-    })
-    let description = (response.choices as any)[0]?.message.content as string;
-
-    return description;
-
+    const response: any = await client.chat.completions.create({
+        messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: route }
+        ],
+        model
+    });
+    return response?.choices?.[0]?.message?.content ?? '';
 }
-export async function GenerateImageFromRoute(request: Request, route: string) {
-    console.log("Generating image for route:", route);
+
+export async function GenerateImageFromRoute(request: Request, route: string): Promise<string> {
     await runware.ensureConnection();
 
-    let description = await GetImageDescriptionFromRoute(request, route);
+    const description = await GetImageDescriptionFromRoute(request, route);
     const config = await GetConfig(request);
-    const negativePrompt = config.getString('image_description_negative_prompt'); // blurry, low quality, bad quality, low resolution, out of focus, poorly drawn, poorly rendered, poorly lit, poorly composed, poorly framed, poorly cropped, poorly colored, poorly designed, poorly styled, text, watermark, logo, signature, copyright, low contrast, overexposed, underexposed, dark, bright, noisy, grainy
+    const negativePrompt = config.getString('image_description_negative_prompt');
     const model = config.getString('image_generation_model');
 
-    let response = await runware.requestImages({
-        model: model,
+    const response = await runware.requestImages({
+        model,
         positivePrompt: description,
-        negativePrompt: negativePrompt,
+        negativePrompt,
         numberResults: 1,
         CFGScale: 1,
         steps: 1,
         outputType: 'base64Data',
         outputFormat: 'PNG',
         width: 1024,
-        height: 1024,
+        height: 1024
     });
-    if (!response || response.length === 0 || !response[0].imageBase64Data) {
-        trackError("Image generation failed", `Route: ${route}, Description: ${description}`);
 
-        console.error("No image generated for route:", route);
-        return "";
+    if (!response || response.length === 0 || !response[0].imageBase64Data) {
+        trackError('Image generation failed', `Route: ${route}, Description: ${description}`);
+        return '';
     }
     trackAIInteraction('image_generation_request', model);
     return response[0].imageBase64Data;
 }
 
-/*
-/no_think 
-    You are a highly imaginative Senior UX/UI Designer. You enjoy creating unique, modern, stunning and interactive web pages that are visually appealing and user-friendly. You have a deep understanding of web design principles, user experience, and the latest design trends. 
-    Your task is to take a given relative URL route and generate a concise description of the ideal version of that webpage. 
-    Your description should focus on its key aspects, overall style, and vibe.
-    Your first task should be to infer the intent of the user based on the route, Some pages may not align with common archtypes, so you should use your best judgement to determine the most appropriate context.
-    Although you will only receive the URL, you must internally infer a plausible context (website type, hypothetical brand, audience, page purpose) to inform your description.
-    Do not explicitly state this inferred context in your output. Your description of the webpage should naturally flow from these internal assumptions. 
-    The more specific the URL route, the more targeted your description can be. For very generic routes, you may need to internally assume a common archetype.
-    Include the given route in your response as a comment at the end.
-    The description should provide a clear, vivid picture of the webpage's content, structure, design and functionality. Complex functionality or interactions should be described in a way that is easy to understand.
-    The description should not have ambiguous or open to interpretation design decisions. Do not let the end designer make decisions about the design, rather you should provide a clear, concise description of the design. 
-    
-*/
+export async function HandleAction(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const route = url.pathname;
+    const method = request.method;
 
-export async function GenerateHtml(request: Request, route: string, referer?: string | null) {
-
-    console.log("Generating HTML for route:", route, "Referer:", referer);
-
-    const config = await GetConfig(request);
-    const systemPrompt = config.getString('html_designer_prompt');
-    const model = config.getString('html_designer_model');
-    trackAIInteraction('website_generation_request', model);
-
-
-    let input = {
-        route
-    } as any;
-    if (referer) {
-        input['referer'] = referer;
-    }
-
-
-    let response = await client.chat.completions.create({
-        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: JSON.stringify(input) }],
-        //model: "qwen-3-32b"
-        model: model
-    })
-    let description = (response.choices as any)[0]?.message.content as string;
-
-    return { prompt: description, html: await RequestHtml(request, description) };
-
-
-}
-/*
-/no_think You are an expert web developer specializing in modern and innovative UI/UX design, with strong proficiency in Tailwind CSS and the ability to integrate custom CSS and JavaScript when necessary for enhanced functionality or unique visual effects.
-Task: Generate a single, raw HTML fragment (no <html>, <head>, or <body> tags, just the content that would go inside the <body>) based on the provided webpage description.
-Key Requirements:
-- HTML Fragment: The output must be a raw HTML fragment.
-- Tailwind CSS First: Primarily use Tailwind CSS classes for all styling. Ensure the classes are up-to-date and effectively implement the design.
-- Inline CSS & JavaScript (Optional but Permitted):
-- If custom styling beyond Tailwind's capabilities is needed to achieve a modern and innovative look, you can include CSS within <style> tags directly in the HTML fragment. If specific interactive elements or animations are required that cannot be achieved with Tailwind CSS alone, you can include JavaScript within <script> tags directly in the HTML fragment. Aim for vanilla JavaScript or very lightweight utility functions if possible, to keep the fragment self-contained.
-- Modern & Innovative Design: The visual output should be sleek, contemporary, and incorporate creative design elements. Think clean lines, good use of whitespace, subtle animations or transitions, and a generally fresh aesthetic. Avoid outdated or generic styles.
-- Responsive: The HTML structure and styling (Tailwind and any custom CSS) should ensure the fragment is responsive and looks good on various screen sizes (mobile, tablet, desktop).
-- Semantic HTML (where appropriate): Use semantic HTML tags where they make sense for accessibility and structure (e.g., <section>, <article>, <nav>, <aside>), but prioritize the visual and structural integrity of the fragment.
-Content Integration:
-- For large blocks of text, use <text-content> tags to indicate where the text should be placed, This tag has description as a mandatory attribute. This is a placeholder for the actual content that will be dynamically inserted later. Ensure the tag has a description attribute that describes the content with a brief summary of what the text should convey, its purpose, any key points it should cover, writting style, **how long it should be** and any relevant context. Everything referenced in the description should have appropriate context.
-- For images, use made-up, descriptive relative URLs. The path should be logical and the filename should describe the image content, using hyphens for spaces (e.g., /images/team/lead-designer-portrait.jpg, /content/features/data-visualization-graph.png).
-- For links (<a> tags), use made-up, descriptive relative URLs (e.g., /services/detail/custom-solutions, /about-us/our-mission). The link text itself should also be descriptive.
-Output Formatting Rules:
-- The response MUST be only the HTML code.
-- Do NOT include any explanations, introductory text, or concluding remarks.
-- Do NOT wrap the HTML in Markdown code blocks (i.e., no \`\`\`html or \`\`\`).
-- The output must start directly with the first HTML tag and end with the last one.
-
-
-*/
-
-async function RequestHtml(request: Request, description: string) {
-    const config = await GetConfig(request);
-    const systemPrompt = config.getString('html_generator_prompt');
-    const model = config.getString('html_generator_model');
-    trackAIInteraction('website_generation_request', model);
-
-    const reusableComponents = await getMcpComponentContext(request, description);
-    const componentPromptContext = buildComponentPromptContext(reusableComponents);
-    const generationInput = componentPromptContext
-        ? `${description}\n\n${componentPromptContext}`
-        : description;
-
+    let bodyJson: Record<string, unknown> = {};
+    let bodyText = '';
     try {
-        let response = await client.chat.completions.create({
-            messages: [{ role: "system", content: systemPrompt }, { role: "user", content: generationInput }],
-            //model: "llama-4-scout-17b-16e-instruct"
-            //model: "qwen-3-32b",
-            model: model,
-
-        })
-
-        if (!response.choices || (response.choices as any).length === 0 || !(response.choices as any)[0]?.message.content) {
-            trackWebsiteGeneration(description, false);
-            return "<!-- Error generating HTML: No content returned -->";
-
+        bodyText = await request.text();
+        if (bodyText.trim()) {
+            const parsed = JSON.parse(bodyText);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                bodyJson = parsed as Record<string, unknown>;
+            }
         }
-        trackWebsiteGeneration(description, true);
-
-        let html = (response.choices as any)[0]?.message.content as string;
-        let regex = /<think>.*<\/think>/g;
-
-        html = html.replaceAll(regex, "").trim();
-        //html = html.replace(/<think>/g, "").replace(/<\/think>/g, "").trim();
-        //html += "\n<!-- " + description + " -->";
-        return html;
-    } catch (error) {
-        trackWebsiteGeneration(description, false);
-
-        console.error("Error generating HTML:", error);
-        return "<!-- Error generating HTML -->";
+    } catch {
+        // Body is not JSON; pass it through as raw text.
     }
+
+    const outputFormat = typeof bodyJson.outputFormat === 'string'
+        ? bodyJson.outputFormat
+        : '{ "ok": boolean, "message": string, "data": any }';
+
+    let config: ServerConfig | null = null;
+    try {
+        config = await GetConfig(request);
+    } catch (error) {
+        console.warn('Action runner: remote config unavailable, using defaults.', error);
+    }
+
+    const systemPrompt = config
+        ? getConfigString(config, 'action_runner_prompt', DEFAULT_ACTION_PROMPT)
+        : DEFAULT_ACTION_PROMPT;
+    const model = config
+        ? getConfigString(config, 'action_runner_model', 'qwen-3-32b')
+        : 'qwen-3-32b';
+
+    trackAIInteraction('action_runner_request', model);
+
+    const allowTool = (name: string) => !COMPONENT_TOOLS.has(name);
+
+    const userPrompt = JSON.stringify({
+        method,
+        route,
+        body: bodyJson,
+        rawBody: bodyJson && Object.keys(bodyJson).length > 0 ? undefined : bodyText,
+        outputFormat,
+        authenticated: Boolean(request.headers.get('authorization'))
+    });
+
+    const { finalText, toolInvocations } = await runMcpToolLoop({
+        request,
+        model,
+        systemPrompt,
+        userPrompt,
+        allowTool,
+        responseFormat: 'json_object'
+    });
+
+    const json = parseActionJson(finalText, toolInvocations);
+    return new Response(JSON.stringify(json), {
+        status: 200,
+        headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'private, no-store',
+            'X-Robots-Tag': 'noindex, nofollow'
+        }
+    });
 }
+
+function parseActionJson(
+    rawText: string,
+    toolInvocations: Array<{ name: string; args: Record<string, unknown>; result: unknown }>
+): unknown {
+    const text = stripCodeFence(rawText).trim();
+    if (text) {
+        try {
+            return JSON.parse(text);
+        } catch {
+            const start = text.indexOf('{');
+            const end = text.lastIndexOf('}');
+            if (start !== -1 && end > start) {
+                try {
+                    return JSON.parse(text.slice(start, end + 1));
+                } catch {
+                    // fall through
+                }
+            }
+        }
+    }
+
+    const lastInvocation = toolInvocations[toolInvocations.length - 1];
+    return {
+        ok: Boolean(lastInvocation && !(lastInvocation.result as any)?.error),
+        message: rawText.trim() || (lastInvocation ? `Executed ${lastInvocation.name}` : 'No tool was invoked.'),
+        data: lastInvocation?.result ?? null
+    };
+}
+

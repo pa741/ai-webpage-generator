@@ -269,14 +269,15 @@ async function generateComponentCode(input: {
     ].join("\n\n");
 
     const systemInstruction = [
-        "You create modular JavaScript Web Components.",
+        "You create modular JavaScript Web Components for a dictionary website.",
         "Rules:",
         "1. Always generate valid plain JavaScript (no TypeScript).",
         "2. Prefer reusing existing components by calling tools before creating new ones.",
         "3. If another reusable component is needed, call CreateComponent or UpdateComponent.",
         "4. Return JSON only: {\"shortDeck\": string, \"dependencies\": string[], \"code\": string}.",
         "5. The 'dependencies' array must contain component IDs used by the generated code.",
-        "6. Keep shortDeck concise and human readable (one sentence)."
+        "6. Keep shortDeck concise and human readable (one sentence).",
+        "7. Any fetch() that mutates state (POST/PUT/DELETE) MUST send a JSON body that includes an 'outputFormat' field. The value is a short description of the expected response shape (for example: \"{ ok: boolean, favoriteCount: number }\"). Then consume the response according to that exact shape. The action runner on the server uses 'outputFormat' to decide what JSON to return."
     ].join("\n");
 
     let conversationHistory: Content[] = [

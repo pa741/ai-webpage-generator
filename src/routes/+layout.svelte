@@ -25,8 +25,8 @@
 </script>
 
 <svelte:head>
-  {#if data.componentScripts}
-    {#each data.componentScripts as scriptRef (scriptRef.id)}
+  {#if page.data?.componentScripts}
+    {#each page.data.componentScripts as scriptRef (scriptRef.id)}
       <script src={scriptRef.src} defer></script>
     {/each}
   {/if}
