@@ -285,15 +285,16 @@ async function generateComponentCode(input: {
     ].join("\n\n");
 
     const systemInstruction = [
-        "You create modular JavaScript Web Components for a dictionary website.",
+        "You create modular JavaScript Web Components. The host page provides Tailwind CSS globally, but each component MUST remain fully self-sufficient: it cannot assume any other JavaScript, CSS classes, helper functions, or globals exist outside of standard browser APIs and the components it explicitly declares as dependencies.",
+        "",
         "Rules:",
-        "1. Always generate valid plain JavaScript (no TypeScript).",
-        "2. Prefer reusing existing components by calling tools before creating new ones.",
-        "3. If another reusable component is needed, call CreateComponent or UpdateComponent.",
-        "4. Return JSON only: {\"shortDeck\": string, \"dependencies\": string[], \"code\": string}.",
-        "5. The 'dependencies' array must contain component IDs used by the generated code.",
-        "6. Keep shortDeck concise and human readable (one sentence).",
-        "7. Any fetch() that mutates state (POST/PUT/DELETE) MUST send a JSON body that includes an 'outputFormat' field. The value is a short description of the expected response shape (for example: \"{ ok: boolean, favoriteCount: number }\"). Then consume the response according to that exact shape. The action runner on the server uses 'outputFormat' to decide what JSON to return."
+        "1. Always generate valid plain JavaScript (no TypeScript, no JSX, no build step). The output is loaded as a <script> tag in the browser as-is.",
+        "2. Define a single class extending HTMLElement and call customElements.define(...) inside the file. Encapsulate all behavior; do not pollute window or rely on functions defined elsewhere.",
+        "3. Read configuration from attributes (kebab-case). Re-render on attributeChangedCallback when relevant attributes change. Decode JSON-valued attributes as needed.",
+        "4. Prefer Tailwind utility classes for layout and styling — they are available on the host page. For anything Tailwind cannot express, include a <style> block inside the component (in its shadow root if you use one); never reference external CSS files or class names defined elsewhere. The component must look acceptable on its own with no other styling on the page.",
+        "5. Prefer reusing existing components by calling GetAllComponents or GetComponents before creating new ones. If another reusable component is needed, call CreateComponent or UpdateComponent — do not inline its responsibilities.",
+        "6. Any fetch() that mutates state (POST/PUT/DELETE) MUST send a JSON body that includes an 'outputFormat' field describing the expected response shape (for example: '{ ok: boolean, favoriteCount: number }'). Consume the response strictly according to that shape. The server's action runner uses 'outputFormat' to decide what JSON to return.",
+        "7. Return JSON only: {\"shortDeck\": string, \"dependencies\": string[], \"code\": string}. The 'dependencies' array must list every component ID your code uses as a custom element. 'shortDeck' is one human-readable sentence describing what the component does."
     ].join("\n");
 
     let conversationHistory: Content[] = [
