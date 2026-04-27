@@ -3,6 +3,9 @@ import { Content, FunctionDeclaration, GoogleGenAI, Type } from "@google/genai";
 import { getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
+import { logger } from "./logger";
+
+const log = logger.child("component-manager");
 
 const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY ?? "AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0"
@@ -194,6 +197,7 @@ async function createOrUpdateComponent(
     context: ToolExecutionContext
 ): Promise<ComponentSummary> {
     if (context.depth > MAX_RECURSION_DEPTH) {
+        log.warn("max_depth_exceeded", { depth: context.depth, lineage: context.lineage, rawId });
         throw new Error(`Max component recursion depth (${MAX_RECURSION_DEPTH}) exceeded.`);
     }
 
@@ -201,8 +205,12 @@ async function createOrUpdateComponent(
 
     const id = normalizeComponentId(rawId, prompt);
     if (context.lineage.includes(id)) {
+        log.warn("cycle_detected", { id, lineage: context.lineage });
         throw new Error(`Recursive component cycle detected for component '${id}'.`);
     }
+
+    const opLog = log.child(mode, { id, depth: context.depth, lineage: context.lineage });
+    const stop = opLog.time("op", { prompt_chars: prompt.length });
 
     const db = getFirestore();
     const docRef = db.collection(COMPONENTS_COLLECTION).doc(id);
@@ -210,6 +218,7 @@ async function createOrUpdateComponent(
     const existingData = existingDoc.exists ? (existingDoc.data() as Partial<ComponentDocument>) : undefined;
 
     if (mode === "create" && existingData?.gsPath) {
+        stop({ reused: true });
         return {
             id,
             shortDeck: existingData.shortDeck ?? "",
@@ -243,6 +252,13 @@ async function createOrUpdateComponent(
     payload.createdAt = existingData?.createdAt ?? FieldValue.serverTimestamp();
 
     await docRef.set(payload, { merge: true });
+
+    stop({
+        reused: false,
+        code_chars: generation.code.length,
+        dependencies: generation.dependencies,
+        gsPath
+    });
 
     return {
         id,
@@ -287,19 +303,27 @@ async function generateComponentCode(input: {
         }
     ];
 
-    let aiResponse = await ai.models.generateContent({
-        model: COMPONENT_GENERATOR_MODEL,
-        config: {
-            systemInstruction,
-            tools: componentTools
-        },
-        contents: conversationHistory
+    const genLog = log.child("gen", {
+        id: input.id,
+        mode: input.mode,
+        depth: input.context.depth,
+        model: COMPONENT_GENERATOR_MODEL
     });
 
+    const callStop = genLog.time("gemini_call", { iteration: 0 });
+    let aiResponse = await ai.models.generateContent({
+        model: COMPONENT_GENERATOR_MODEL,
+        config: { systemInstruction, tools: componentTools },
+        contents: conversationHistory
+    });
+    callStop({ has_function_calls: Boolean(aiResponse.functionCalls?.length) });
+
     let toolCallCount = 0;
+    let iteration = 1;
 
     while (aiResponse.functionCalls && aiResponse.functionCalls.length > 0) {
         if (toolCallCount >= MAX_TOOL_CALLS_PER_GENERATION) {
+            genLog.warn("max_tool_calls_exceeded", { toolCallCount });
             throw new Error(`Exceeded max tool calls (${MAX_TOOL_CALLS_PER_GENERATION}) while generating component '${input.id}'.`);
         }
 
@@ -316,6 +340,11 @@ async function generateComponentCode(input: {
         const toolResults = [];
         for (const functionCall of aiResponse.functionCalls) {
             toolCallCount += 1;
+            const toolStop = genLog.time("tool_call", {
+                tool: functionCall.name,
+                iteration,
+                tool_index: toolCallCount
+            });
             try {
                 const result = await executeComponentToolCallInternal(functionCall.name ?? "", functionCall.args, {
                     depth: input.context.depth + 1,
@@ -328,6 +357,7 @@ async function generateComponentCode(input: {
                         response: { result }
                     }
                 });
+                toolStop({ ok: true });
             } catch (error) {
                 const message = error instanceof Error ? error.message : "Unknown tool execution error";
                 toolResults.push({
@@ -336,28 +366,34 @@ async function generateComponentCode(input: {
                         response: { error: message }
                     }
                 });
+                toolStop({ ok: false, error: message });
+                genLog.warn("tool_failed", { tool: functionCall.name, error: message });
             }
         }
 
-        conversationHistory.push({
-            role: "user",
-            parts: toolResults
-        });
+        conversationHistory.push({ role: "user", parts: toolResults });
 
+        const nextStop = genLog.time("gemini_call", { iteration });
         aiResponse = await ai.models.generateContent({
             model: COMPONENT_GENERATOR_MODEL,
-            config: {
-                systemInstruction,
-                tools: componentTools
-            },
+            config: { systemInstruction, tools: componentTools },
             contents: conversationHistory
         });
+        nextStop({ has_function_calls: Boolean(aiResponse.functionCalls?.length) });
+        iteration += 1;
     }
 
     const finalText = aiResponse.text?.trim();
     if (!finalText) {
+        genLog.error("empty_final_text", { iterations: iteration, toolCallCount });
         throw new Error(`Model returned an empty response while generating component '${input.id}'.`);
     }
+
+    genLog.info("generation_complete", {
+        iterations: iteration,
+        tool_calls_total: toolCallCount,
+        final_chars: finalText.length
+    });
 
     return parseGeneratedPayload(finalText);
 }

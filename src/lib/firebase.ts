@@ -35,11 +35,7 @@ if (browser) {
 
   cpo = new CloudflareProviderOptions(HTTP_ENDPOINT, PUBLIC_TURNSTILE_SITE_KEY);
   const provider = new CustomProvider(cpo);
-
   check = initializeAppCheck(app, { provider });
-
-  console.log('Cloudflare Turnstile App Check initialized with site key:', PUBLIC_TURNSTILE_SITE_KEY);
-
 }
 export { cpo, check };
 
