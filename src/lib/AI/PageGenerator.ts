@@ -9,8 +9,12 @@ import {
 } from '$env/static/private';
 import { env } from '$env/dynamic/private';
 import { PUBLIC_FIREBASE_PROJECT_ID } from '$env/static/public';
-import { getRemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
-import app from '../firebase_admin';
+
+import pageDesignerPrompt from '../../../prompts/page_designer.json';
+import htmlGeneratorPrompt from '../../../prompts/html_generator.json';
+import actionRunnerPrompt from '../../../prompts/action_runner.json';
+import imageDescriptionPrompt from '../../../prompts/image_description.json';
+import imageGenerationConfig from '../../../prompts/image_generation.json';
 
 const client = new Cerebras({ apiKey: CEREBRAS_API_KEY });
 const runware = new Runware({ apiKey: RUNWARE_API_KEY });
@@ -250,66 +254,6 @@ async function runMcpToolLoop(input: {
     return outcome ?? result;
 }
 
-async function GetConfig(request: Request): Promise<ServerConfig> {
-    const remoteConfig = getRemoteConfig(app);
-    const template = await remoteConfig.getServerTemplate();
-    return template.evaluate({
-        platform: request.headers.get('Sec-CH-UA-Platform') || 'unknown',
-        userAgent: request.headers.get('User-Agent') || 'unknown',
-        acceptLanguage: request.headers.get('Accept-Language') || 'en-US',
-        referer: request.headers.get('Referer') || ''
-    });
-}
-
-function getConfigString(config: ServerConfig, key: string, fallback?: string): string {
-    const value = config.getString(key);
-    if (value && value.trim()) {
-        return value;
-    }
-    if (typeof fallback === 'string') {
-        return fallback;
-    }
-    throw new Error(`Remote config key '${key}' is missing.`);
-}
-
-const DEFAULT_DESIGNER_PROMPT = `You are the page designer for a dictionary website. Every request relates to dictionary entries (words, definitions, etymology, usage, favorites).
-
-Your job is one thing: produce a JSON page spec for the route below.
-
-Rules:
-1. Infer what dictionary-related page the user wants based on the route.
-2. Inspect available reusable components by calling GetAllComponents or GetComponents. Prefer using existing components over inventing new markup.
-3. If a needed component does not exist, call CreateComponent with a clear id (kebab-case) and a precise prompt describing the component's responsibility, props, and behavior. Components persist across page loads, so reuse is critical for layout stability.
-4. Use read-only data tools (GetWord, SearchWords, GetWordOfTheDay) only when the page content depends on real data; otherwise leave the spec abstract enough for the renderer to fill it in.
-5. When you are done with tools, return ONLY a JSON object (no prose, no code fences) shaped like:
-{
-  "title": string,
-  "description": string,
-  "sections": [
-    { "component": "<component-id>", "props": {...}, "children": [...] } |
-    { "content": "<plain text or HTML hint>" }
-  ]
-}
-Each section may either reference a component by id or describe inline content. Children are nested sections.`;
-
-const DEFAULT_RENDERER_PROMPT = `You are the page renderer for a dictionary website. You receive a JSON page spec and a list of available custom-element components, and you emit a single raw HTML fragment (no <html>, <head>, or <body>; only what would go inside <body>).
-
-Rules:
-- Use Tailwind CSS utility classes for layout and styling.
-- Whenever a section references a component id, render it as <component-id ...props></component-id>. Pass props as kebab-case attributes; non-string props as JSON-encoded attribute values.
-- For inline content sections, emit semantic HTML.
-- For images, use descriptive relative URLs (e.g. /images/words/serendipity-illustration.png).
-- For internal links, use descriptive relative URLs.
-- Output ONLY the HTML fragment. No markdown fences, no commentary.`;
-
-const DEFAULT_ACTION_PROMPT = `You are the action runner for a dictionary website. Every non-GET request expresses an intent the user wants executed against the dictionary domain.
-
-You receive: the HTTP method, route, request body (JSON), and the authenticated user context (if any). Pick exactly the tool that fulfills the user's intent and call it. Never ask clarifying questions.
-
-After the tool finishes, you MUST return ONLY a JSON object (no prose, no code fences). If the request body contains an "outputFormat" field, the JSON you return MUST conform to that shape description. If "outputFormat" is missing, return { "ok": boolean, "message": string, "data": any }.
-
-If the tool fails (including auth errors), still return JSON conforming to outputFormat where possible, with ok=false and a message explaining what went wrong.`;
-
 export interface DesignedPage {
     pageSpec: PageSpec;
     rawDesignerOutput: string;
@@ -317,18 +261,14 @@ export interface DesignedPage {
 }
 
 export async function DesignPage(request: Request, route: string): Promise<DesignedPage> {
-    const config = await GetConfig(request);
-    const systemPrompt = getConfigString(config, 'page_designer_prompt', DEFAULT_DESIGNER_PROMPT);
-    const model = getConfigString(config, 'html_designer_model', 'qwen-3-32b');
-
-    trackAIInteraction('page_designer_request', model);
+    trackAIInteraction('page_designer_request', pageDesignerPrompt.model);
 
     const allowTool = (name: string) => COMPONENT_TOOLS.has(name) || READ_ONLY_DICTIONARY_TOOLS.has(name);
 
     const { finalText, toolInvocations } = await runMcpToolLoop({
         request,
-        model,
-        systemPrompt,
+        model: pageDesignerPrompt.model,
+        systemPrompt: pageDesignerPrompt.prompt,
         userPrompt: JSON.stringify({ route }),
         allowTool,
         responseFormat: 'json_object'
@@ -407,11 +347,8 @@ function collectComponentIds(
     return Array.from(ids);
 }
 
-export async function RequestHtml(request: Request, pageSpec: PageSpec, usedComponentIds: string[]): Promise<string> {
-    const config = await GetConfig(request);
-    const systemPrompt = getConfigString(config, 'html_generator_prompt', DEFAULT_RENDERER_PROMPT);
-    const model = getConfigString(config, 'html_generator_model', 'qwen-3-32b');
-    trackAIInteraction('website_generation_request', model);
+export async function RequestHtml(_request: Request, pageSpec: PageSpec, usedComponentIds: string[]): Promise<string> {
+    trackAIInteraction('website_generation_request', htmlGeneratorPrompt.model);
 
     const userPrompt = JSON.stringify({
         pageSpec,
@@ -421,10 +358,10 @@ export async function RequestHtml(request: Request, pageSpec: PageSpec, usedComp
     try {
         const response: any = await client.chat.completions.create({
             messages: [
-                { role: 'system', content: systemPrompt },
+                { role: 'system', content: htmlGeneratorPrompt.prompt },
                 { role: 'user', content: userPrompt }
             ],
-            model
+            model: htmlGeneratorPrompt.model
         });
 
         const content = response?.choices?.[0]?.message?.content;
@@ -464,34 +401,28 @@ export async function GenerateHomePage(request: Request): Promise<GeneratedPage>
     return GenerateHtml(request, '');
 }
 
-async function GetImageDescriptionFromRoute(request: Request, route: string): Promise<string> {
-    const config = await GetConfig(request);
-    const systemPrompt = config.getString('image_description_prompt');
-    const model = config.getString('image_description_model');
-    trackAIInteraction('image_description_generation_request', model);
+async function GetImageDescriptionFromRoute(route: string): Promise<string> {
+    trackAIInteraction('image_description_generation_request', imageDescriptionPrompt.model);
 
     const response: any = await client.chat.completions.create({
         messages: [
-            { role: 'system', content: systemPrompt },
+            { role: 'system', content: imageDescriptionPrompt.prompt },
             { role: 'user', content: route }
         ],
-        model
+        model: imageDescriptionPrompt.model
     });
     return response?.choices?.[0]?.message?.content ?? '';
 }
 
-export async function GenerateImageFromRoute(request: Request, route: string): Promise<string> {
+export async function GenerateImageFromRoute(_request: Request, route: string): Promise<string> {
     await runware.ensureConnection();
 
-    const description = await GetImageDescriptionFromRoute(request, route);
-    const config = await GetConfig(request);
-    const negativePrompt = config.getString('image_description_negative_prompt');
-    const model = config.getString('image_generation_model');
+    const description = await GetImageDescriptionFromRoute(route);
 
     const response = await runware.requestImages({
-        model,
+        model: imageGenerationConfig.model,
         positivePrompt: description,
-        negativePrompt,
+        negativePrompt: imageGenerationConfig.negativePrompt,
         numberResults: 1,
         CFGScale: 1,
         steps: 1,
@@ -505,7 +436,7 @@ export async function GenerateImageFromRoute(request: Request, route: string): P
         trackError('Image generation failed', `Route: ${route}, Description: ${description}`);
         return '';
     }
-    trackAIInteraction('image_generation_request', model);
+    trackAIInteraction('image_generation_request', imageGenerationConfig.model);
     return response[0].imageBase64Data;
 }
 
@@ -532,21 +463,7 @@ export async function HandleAction(request: Request): Promise<Response> {
         ? bodyJson.outputFormat
         : '{ "ok": boolean, "message": string, "data": any }';
 
-    let config: ServerConfig | null = null;
-    try {
-        config = await GetConfig(request);
-    } catch (error) {
-        console.warn('Action runner: remote config unavailable, using defaults.', error);
-    }
-
-    const systemPrompt = config
-        ? getConfigString(config, 'action_runner_prompt', DEFAULT_ACTION_PROMPT)
-        : DEFAULT_ACTION_PROMPT;
-    const model = config
-        ? getConfigString(config, 'action_runner_model', 'qwen-3-32b')
-        : 'qwen-3-32b';
-
-    trackAIInteraction('action_runner_request', model);
+    trackAIInteraction('action_runner_request', actionRunnerPrompt.model);
 
     const allowTool = (name: string) => !COMPONENT_TOOLS.has(name);
 
@@ -561,8 +478,8 @@ export async function HandleAction(request: Request): Promise<Response> {
 
     const { finalText, toolInvocations } = await runMcpToolLoop({
         request,
-        model,
-        systemPrompt,
+        model: actionRunnerPrompt.model,
+        systemPrompt: actionRunnerPrompt.prompt,
         userPrompt,
         allowTool,
         responseFormat: 'json_object'
