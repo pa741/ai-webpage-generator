@@ -4,6 +4,7 @@ import { getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { logger } from "./logger";
+import componentGeneratorPrompt from "../prompts/component_generator.json";
 
 const log = logger.child("component-manager");
 
@@ -13,7 +14,6 @@ const ai = new GoogleGenAI({
 
 const COMPONENTS_COLLECTION = "components";
 const COMPONENTS_STORAGE_PREFIX = "components";
-const COMPONENT_GENERATOR_MODEL = process.env.COMPONENT_GENERATOR_MODEL ?? "gemini-2.5-flash";
 const MAX_TOOL_CALLS_PER_GENERATION = 16;
 const MAX_RECURSION_DEPTH = 3;
 
@@ -284,18 +284,8 @@ async function generateComponentCode(input: {
         "Return strict JSON only with keys: shortDeck, dependencies, code."
     ].join("\n\n");
 
-    const systemInstruction = [
-        "You create modular JavaScript Web Components. The host page provides Tailwind CSS globally, but each component MUST remain fully self-sufficient: it cannot assume any other JavaScript, CSS classes, helper functions, or globals exist outside of standard browser APIs and the components it explicitly declares as dependencies.",
-        "",
-        "Rules:",
-        "1. Always generate valid plain JavaScript (no TypeScript, no JSX, no build step). The output is loaded as a <script> tag in the browser as-is.",
-        "2. Define a single class extending HTMLElement and call customElements.define(...) inside the file. Encapsulate all behavior; do not pollute window or rely on functions defined elsewhere.",
-        "3. Read configuration from attributes (kebab-case). Re-render on attributeChangedCallback when relevant attributes change. Decode JSON-valued attributes as needed.",
-        "4. Prefer Tailwind utility classes for layout and styling — they are available on the host page. For anything Tailwind cannot express, include a <style> block inside the component (in its shadow root if you use one); never reference external CSS files or class names defined elsewhere. The component must look acceptable on its own with no other styling on the page.",
-        "5. Prefer reusing existing components by calling GetAllComponents or GetComponents before creating new ones. If another reusable component is needed, call CreateComponent or UpdateComponent — do not inline its responsibilities.",
-        "6. Any fetch() that mutates state (POST/PUT/DELETE) MUST send a JSON body that includes an 'outputFormat' field describing the expected response shape (for example: '{ ok: boolean, favoriteCount: number }'). Consume the response strictly according to that shape. The server's action runner uses 'outputFormat' to decide what JSON to return.",
-        "7. Return JSON only: {\"shortDeck\": string, \"dependencies\": string[], \"code\": string}. The 'dependencies' array must list every component ID your code uses as a custom element. 'shortDeck' is one human-readable sentence describing what the component does."
-    ].join("\n");
+    const systemInstruction = componentGeneratorPrompt.prompt;
+    const model = componentGeneratorPrompt.model;
 
     let conversationHistory: Content[] = [
         {
@@ -308,12 +298,12 @@ async function generateComponentCode(input: {
         id: input.id,
         mode: input.mode,
         depth: input.context.depth,
-        model: COMPONENT_GENERATOR_MODEL
+        model
     });
 
     const callStop = genLog.time("gemini_call", { iteration: 0 });
     let aiResponse = await ai.models.generateContent({
-        model: COMPONENT_GENERATOR_MODEL,
+        model,
         config: { systemInstruction, tools: componentTools },
         contents: conversationHistory
     });
@@ -376,7 +366,7 @@ async function generateComponentCode(input: {
 
         const nextStop = genLog.time("gemini_call", { iteration });
         aiResponse = await ai.models.generateContent({
-            model: COMPONENT_GENERATOR_MODEL,
+            model,
             config: { systemInstruction, tools: componentTools },
             contents: conversationHistory
         });
