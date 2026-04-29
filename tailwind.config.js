@@ -1,5 +1,5 @@
 /** @type {import('tailwindcss').Config} */
-module.exports = {
+export default {
     // 1. content: Specifies which files Tailwind should scan for class names.
     // This is crucial for Tailwind's JIT (Just-In-Time) mode and purging unused CSS.
     content: [

@@ -7,6 +7,7 @@ export const load: PageLoad = async ({ data, parent }) => {
             html: data.html,
             css: data.css,
             prompt: data.prompt,
+            componentScripts: data.componentScripts
         }
     }
     if (!browser) {

@@ -2,12 +2,10 @@
 import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
 import { getFirestore } from 'firebase-admin/firestore';
+import { logger } from './logger';
 
+const log = logger.child('asset-manager');
 
-import OpenAI from 'openai';
-const client = new OpenAI({
-    apiKey: "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"
-});
 interface HdriAsset {
     name: string;
     type: number;
@@ -43,7 +41,7 @@ interface HdriFiles {
 
 
 export async function LoadHdris() {
-    //https://api.polyhaven.com/assets?t=hdris
+    const stop = log.time('load_hdris');
     const response = await axios.get<HdriResponse>('https://api.polyhaven.com/assets?t=hdris');
     const assets = response.data;
     // add the lowest resolution hdri url to each asset
@@ -75,9 +73,8 @@ export async function LoadHdris() {
         batch.set(docRef, asset);
     }
     await batch.commit();
-    console.log('HDRIs loaded into Firestore');
+    stop({ asset_count: Object.keys(assets).length });
     return assets;
-
 }
 
 interface PolyPizzaAsset {
@@ -98,45 +95,72 @@ interface PolyPizzaAsset {
     Animated: boolean;
 }
 
-export async function GetModel(search: string, ai: GoogleGenAI): Promise<string> {
-    const db = getFirestore();
+async function createEmbedding(input: string): Promise<number[]> {
+    const apiKey = process.env.OPENAI_API_KEY || "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";
+    const embeddingResponse = await axios.post<{ data: Array<{ embedding: number[] }> }>(
+        "https://api.openai.com/v1/embeddings",
+        {
+            model: "text-embedding-3-small",
+            input,
+        },
+        {
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+        }
+    );
 
-    // Generate embedding for the search query
-    const embeddingResult = await client.embeddings.create({ model: "text-embedding-3-small", input: search });
-    const searchEmbedding = embeddingResult.data[0]?.embedding;
-
-    if (!searchEmbedding) {
+    const embedding = embeddingResponse.data.data[0]?.embedding;
+    if (!embedding) {
         throw new Error('Failed to generate embedding for the search query.');
     }
 
-    // Find the nearest model using vector search
+    return embedding;
+}
+
+export async function GetModel(search: string, ai: GoogleGenAI): Promise<string> {
+    const stop = log.child('model').time('lookup', { search });
+    const db = getFirestore();
+
+    let searchEmbedding: number[];
+    try {
+        searchEmbedding = await createEmbedding(search);
+    } catch (error) {
+        stop({ ok: false, stage: 'embedding', error });
+        throw error;
+    }
+
     const snapshot = await db.collection('models').findNearest({
         distanceMeasure: 'COSINE',
         vectorField: 'embedding',
         queryVector: searchEmbedding,
-        limit: 1,
+        limit: 1
     }).get();
 
     if (snapshot.empty) {
+        stop({ ok: false, stage: 'firestore', empty: true });
         throw new Error(`No model found for search term: "${search}"`);
     }
 
     const model = snapshot.docs[0].data() as PolyPizzaAsset & { storageUrl: string };
     if (!model.storageUrl) {
+        stop({ ok: false, stage: 'storage_url_missing', modelId: model.ID });
         throw new Error(`Model found for "${search}", but it has no storage URL.`);
     }
+    stop({ ok: true, modelId: model.ID, title: model.Title });
     return model.storageUrl;
 }
 export async function GetHdri(tags: string[]): Promise<string> {
+    const stop = log.child('hdri').time('lookup', { tags });
     const db = getFirestore();
     const searchTags = tags.map(t => t.toLowerCase()).filter(Boolean);
 
     if (searchTags.length === 0) {
+        stop({ ok: false, reason: 'no_tags' });
         throw new Error('No tags provided for HDRI search.');
     }
 
-    // Firestore 'array-contains-any' can take up to 10 elements.
-    // If more are provided, we'll just use the first 10.
     const queryTags = searchTags.slice(0, 10);
 
     const snapshot = await db.collection('hdris')
@@ -145,27 +169,30 @@ export async function GetHdri(tags: string[]): Promise<string> {
         .get();
 
     if (snapshot.empty) {
-        // If no results with any of the tags, try finding one with just the first tag as a fallback.
         const fallbackSnapshot = await db.collection('hdris')
             .where('tags', 'array-contains', queryTags[0])
             .limit(1)
             .get();
 
         if (fallbackSnapshot.empty) {
+            stop({ ok: false, reason: 'not_found', queryTags });
             throw new Error(`No HDRI found for tags: "${tags.join(', ')}"`);
         }
 
         const asset = fallbackSnapshot.docs[0].data() as HdriAsset;
         if (!asset.hdriUrl) {
+            stop({ ok: false, reason: 'no_url_fallback' });
             throw new Error('HDRI found, but it has no download URL.');
         }
+        stop({ ok: true, fallback: true, hdri: asset.name });
         return asset.hdriUrl;
     }
 
-    // Return the first asset url
     const asset = snapshot.docs[0].data() as HdriAsset;
     if (!asset.hdriUrl) {
+        stop({ ok: false, reason: 'no_url' });
         throw new Error('HDRI found, but it has no download URL.');
     }
+    stop({ ok: true, hdri: asset.name });
     return asset.hdriUrl;
 }

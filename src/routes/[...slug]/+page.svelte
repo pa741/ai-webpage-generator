@@ -40,11 +40,14 @@
 
 <svelte:head>
   {@html style}
+  {#if data.componentScripts}
+    {#each data.componentScripts as scriptRef (scriptRef.id)}
+      <script src={scriptRef.src} defer></script>
+    {/each}
+  {/if}
 </svelte:head>
-
 {#if data.prompt}
   <p style="display: none;" class="prompt">{data.prompt}</p>
 {/if}
-{#if data.html}
-  {@html data.html}
-{/if}
+
+{@html data.html}

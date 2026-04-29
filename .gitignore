@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 .svelte-kit/*
 .firebase/*
+emulator-data/*
+firebase-export-*
+.claude/settings.local.json

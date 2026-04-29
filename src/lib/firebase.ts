@@ -33,13 +33,9 @@ let cpo: CloudflareProviderOptions | undefined = undefined;
 let check: AppCheck | undefined = undefined;
 if (browser) {
 
-  cpo = new CloudflareProviderOptions(HTTP_ENDPOINT, PUBLIC_TURNSTILE_SITE_KEY);
-  const provider = new CustomProvider(cpo);
-
-  check = initializeAppCheck(app, { provider });
-
-  console.log('Cloudflare Turnstile App Check initialized with site key:', PUBLIC_TURNSTILE_SITE_KEY);
-
+  //cpo = new CloudflareProviderOptions(HTTP_ENDPOINT, PUBLIC_TURNSTILE_SITE_KEY);
+  //const provider = new CustomProvider(cpo);
+  //check = initializeAppCheck(app, { provider });
 }
 export { cpo, check };
 

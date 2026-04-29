@@ -6,82 +6,91 @@
  *
  * See a full list of supported triggers at https://firebase.google.com/docs/functions
  */
-// gemini api key -> AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0
-
-import { onCall,  Request } from "firebase-functions/https";
-import { GoogleGenAI, FunctionDeclaration, Type, Content, } from "@google/genai";
+import { onCall, onRequest, Request } from "firebase-functions/https";
+import { streamText } from "ai";
+import { GoogleGenAI, FunctionDeclaration, Type, Content } from "@google/genai";
 import { getRemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
 import { initializeApp } from "firebase-admin/app";
 import { GetHdri, GetModel } from "./asset-manager";
+import { mcpHandler } from "./mcp";
+import { generateRequestId, logger, withRequestContext } from "./logger";
+import { resolveLanguageModel, resolveProviderName } from "./ai-model-provider";
 
-
-
-const ai = new GoogleGenAI({ apiKey: "AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0" });
+const ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY
+});
 
 // 3abc7eff92ea4a8eb4d2e4af396e1aa9 -> poly.pizza
 const app = initializeApp();
-
+const log = logger.child("index");
 
 async function GetConfig(headers: Request): Promise<ServerConfig> {
     const remoteConfig = getRemoteConfig(app);
-    console.log('Fetching remote config...');
-    console.log('Remote config:', remoteConfig);
-    //list methods of remoteConfig
-    let methods = Object.getOwnPropertyNames(Object.getPrototypeOf(remoteConfig));
-    console.log('Remote config methods:', methods);
-
-    const template = await remoteConfig.getServerTemplate()
-    console.log('Remote config template:', template);
-    //await template.load();
-
-
+    const stop = log.child("config").time("fetch_remote_config");
+    const template = await remoteConfig.getServerTemplate();
     const config = template.evaluate({
         platform: headers.get('Sec-CH-UA-Platform') || 'unknown',
         userAgent: headers.get('User-Agent') || 'unknown',
         acceptLanguage: headers.get('Accept-Language') || 'en-US',
-        referer: headers.get('Referer') || '',
+        referer: headers.get('Referer') || ''
     });
-
-
+    stop({ ok: true });
     return config;
 }
 
-
-
+export const mcp = onRequest({
+    region: "europe-southwest1",
+    timeoutSeconds: 3600
+}, async (request, response) => {
+    await mcpHandler(request, response);
+});
 
 export const generateContent = onCall({
     region: "europe-southwest1"
-    //, cors:[/groots.es$/]
 }, async (request, response) => {
-    const { description } = request.data;
-    if (!description) {
-        throw new Error("Prompt is required");
-    }
-    const config = await GetConfig(request.rawRequest);
-    const prompt = config.getString("content_writter_prompt");
-    const model = config.getString("content_writter_model");
-
-    let aiResponse = await ai.models.generateContentStream({
-        model: model,
-        config: {
-
-            systemInstruction: prompt
-        },
-        contents: description
-    });
-    const fullResponse = [];
-
-    for await (const chunk of aiResponse) {
-        if (request.acceptsStreaming) {
-            response?.sendChunk({
-                content: chunk.text,
-            });
+    const requestId = (request.rawRequest.headers["x-request-id"] as string | undefined) ?? generateRequestId();
+    return withRequestContext(requestId, { fn: "generateContent" }, async () => {
+        const stop = log.child("generateContent").time("call");
+        const { description } = request.data;
+        if (!description) {
+            stop({ ok: false, reason: "missing_description" });
+            throw new Error("Prompt is required");
         }
-        fullResponse.push(chunk.text);
-    }
-    return fullResponse;
 
-})
+        const config = await GetConfig(request.rawRequest);
+        const prompt = config.getString("content_writter_prompt");
+        const model = config.getString("content_writter_model");
+        log.info("generateContent.params", {
+            model,
+            provider: resolveProviderName(model),
+            description_chars: description.length
+        });
+
+        const aiResponse = streamText({
+            model: resolveLanguageModel(model),
+            system: prompt,
+            prompt: description
+        });
+        const fullResponse: string[] = [];
+
+        for await (const textPart of aiResponse.textStream) {
+            if (request.acceptsStreaming) {
+                response?.sendChunk({ content: textPart });
+            }
+            fullResponse.push(textPart);
+        }
+
+        const usage = await aiResponse.totalUsage;
+
+        stop({
+            ok: true,
+            chunks: fullResponse.length,
+            total_chars: fullResponse.join("").length,
+            total_tokens: usage.totalTokens
+        });
+        return fullResponse;
+    });
+});
 
 
 // Tool definitions for the LLM
@@ -118,7 +127,6 @@ const getModelTool: FunctionDeclaration = {
     }
 };
 
-// Tool execution handler
 async function executeTool(toolName: string, args: any): Promise<string> {
     switch (toolName) {
         case "GetHdri":
@@ -132,92 +140,87 @@ async function executeTool(toolName: string, args: any): Promise<string> {
 
 export const createScene = onCall({
     region: "europe-southwest1"
-    //, cors:[/groots.es$/]
-}, async (request, response) => {
-    const { description } = request.data as { description: string };
-    if (!description) {
-        throw new Error("Prompt is required");
-    }
-    const config = await GetConfig(request.rawRequest);
-    const prompt = config.getString("three_generator_prompt");
-    const model = config.getString("three_generator_model");
-    //print tools
-    console.log("Available tools:", [getModelTool]);
+}, async (request) => {
+    const requestId = (request.rawRequest.headers["x-request-id"] as string | undefined) ?? generateRequestId();
+    return withRequestContext(requestId, { fn: "createScene" }, async () => {
+        const sceneLog = log.child("createScene");
+        const stop = sceneLog.time("call");
 
-    // Initial AI request with tools available
-    let aiResponse = await ai.models.generateContent({
-        model: model,
-        config: {
-            systemInstruction: prompt,
-            tools: [{ functionDeclarations: [getModelTool] }]
-        },
-        contents: [
-            { role: "user", parts: [{ text: description }] }
-        ]
-    });
-
-    // Check if the model wants to use tools
-    let conversationHistory = [
-        { role: "user", parts: [{ text: description }] }
-    ] as Content[];
-
-    // Handle tool calls iteratively
-    while (aiResponse.functionCalls && aiResponse.functionCalls.length > 0) {
-        console.log("AI wants to use tools:", aiResponse.functionCalls);
-
-        // Add the AI's response with function calls to conversation
-        conversationHistory.push({
-            role: "assistant",
-            parts: aiResponse.functionCalls.map(fc => ({
-                functionCall: {
-                    name: fc.name,
-                    args: fc.args
-                }
-            }))
-        });
-
-        // Execute each tool call and collect results
-        const toolResults = [];
-        for (const functionCall of aiResponse.functionCalls) {
-            try {
-                const result = await executeTool(functionCall.name!, functionCall.args!);
-                toolResults.push({
-                    functionResponse: {
-                        name: functionCall.name,
-                        response: { result }
-                    }
-                });
-                console.log(`Tool ${functionCall.name} returned:`, result);
-            } catch (error) {
-                console.error(`Error executing tool ${functionCall.name}:`, error);
-                const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-                toolResults.push({
-                    functionResponse: {
-                        name: functionCall.name,
-                        response: { error: errorMessage }
-                    }
-                });
-            }
+        const { description } = request.data as { description: string };
+        if (!description) {
+            stop({ ok: false, reason: "missing_description" });
+            throw new Error("Prompt is required");
         }
 
-        // Add tool results to conversation
-        conversationHistory.push({
-            role: "user",
-            parts: toolResults
-        });
+        const config = await GetConfig(request.rawRequest);
+        const prompt = config.getString("three_generator_prompt");
+        const model = config.getString("three_generator_model");
+        sceneLog.info("scene_params", { model, description_chars: description.length, tools: ["GetModel"] });
 
-        // Get the next response from AI with tool results
-        aiResponse = await ai.models.generateContent({
-            model: model,
+        const initStop = sceneLog.time("gemini_call", { iteration: 0 });
+        let aiResponse = await ai.models.generateContent({
+            model,
             config: {
                 systemInstruction: prompt,
                 tools: [{ functionDeclarations: [getModelTool] }]
             },
-            contents: conversationHistory
+            contents: [{ role: "user", parts: [{ text: description }] }]
         });
-    }
+        initStop({ has_function_calls: Boolean(aiResponse.functionCalls?.length) });
 
-    return { script: aiResponse.text };
+        const conversationHistory: Content[] = [
+            { role: "user", parts: [{ text: description }] }
+        ];
 
-})
+        let toolCallTotal = 0;
+        let iteration = 1;
 
+        while (aiResponse.functionCalls && aiResponse.functionCalls.length > 0) {
+            conversationHistory.push({
+                role: "assistant",
+                parts: aiResponse.functionCalls.map(fc => ({
+                    functionCall: { name: fc.name, args: fc.args }
+                }))
+            });
+
+            const toolResults = [];
+            for (const functionCall of aiResponse.functionCalls) {
+                toolCallTotal += 1;
+                const toolStop = sceneLog.time("tool_call", { tool: functionCall.name, iteration });
+                try {
+                    const result = await executeTool(functionCall.name!, functionCall.args!);
+                    toolResults.push({ functionResponse: { name: functionCall.name, response: { result } } });
+                    toolStop({ ok: true, result_chars: typeof result === "string" ? result.length : undefined });
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : "Unknown error";
+                    toolResults.push({ functionResponse: { name: functionCall.name, response: { error: message } } });
+                    toolStop({ ok: false, error: message });
+                    sceneLog.warn("tool_failed", { tool: functionCall.name, error: message });
+                }
+            }
+
+            conversationHistory.push({ role: "user", parts: toolResults });
+
+            const nextStop = sceneLog.time("gemini_call", { iteration });
+            aiResponse = await ai.models.generateContent({
+                model,
+                config: {
+                    systemInstruction: prompt,
+                    tools: [{ functionDeclarations: [getModelTool] }]
+                },
+                contents: conversationHistory
+            });
+            nextStop({ has_function_calls: Boolean(aiResponse.functionCalls?.length) });
+            iteration += 1;
+        }
+
+        const script = aiResponse.text;
+        stop({
+            ok: true,
+            iterations: iteration,
+            tool_calls_total: toolCallTotal,
+            script_chars: typeof script === "string" ? script.length : 0
+        });
+        return { script };
+    });
+});

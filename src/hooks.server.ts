@@ -1,145 +1,151 @@
-
-
 // src/app.d.ts
 declare global {
     namespace App {
         // interface Error {}
         interface Locals {
             validationCookie: string | undefined;
+            requestId: string;
         }
         // interface PageData {}
         // interface Platform {}
     }
 }
 
-import { GenerateImageFromRoute } from '$lib/AI/PageGenerator';
-import { PRIVATE_TURNSTILE_SECRET_KEY } from '$env/static/private';
+import { GenerateImageFromRoute, HandleAction } from '$lib/AI/PageGenerator';
 import { logServerSideEvent } from '$lib/server_analytics';
 import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
-import type { Handle, RequestEvent } from '@sveltejs/kit'; // Ensure this type import is present or add it
+import { generateRequestId, logger, withRequestContext } from '$lib/logger';
+import type { Handle, RequestEvent } from '@sveltejs/kit';
 import './lib/firebase_admin';
 
+const log = logger.child('hooks');
 
 async function handleImageRequest(event: RequestEvent, pathname: string): Promise<Response> {
+    const imgLog = log.child('image', { route: pathname });
     let imageKey = pathname;
-
-    // Remove leading slash if present
-    if (imageKey.startsWith('/')) {
-        imageKey = imageKey.substring(1);
-    }
-
-    // Replace remaining slashes with hyphens
+    if (imageKey.startsWith('/')) imageKey = imageKey.substring(1);
     imageKey = imageKey.replace(/\//g, '-');
-
-    // Remove file extension
     const lastDotIndex = imageKey.lastIndexOf('.');
-    if (lastDotIndex > 0) { // Ensure dot is not the first character and is present
-        imageKey = imageKey.substring(0, lastDotIndex);
-    }
+    if (lastDotIndex > 0) imageKey = imageKey.substring(0, lastDotIndex);
 
-    const requestHeaders: { [key: string]: string } = {};
-    event.request.headers.forEach((value, key) => {
-        requestHeaders[key] = value;
-    });
-
-    const firestoreData = {
-        timestamp: serverTimestamp(), // Will be converted to server timestamp by Firestore
-        method: event.request.method,
-        url: event.request.url, // Full URL
-        pathname: event.url.pathname, // Just the path. Note: this uses event.url.pathname, while the function takes `pathname`. They should be identical in this context.
-        headers: requestHeaders,
-        // Add any other specific event.request properties if deemed necessary later
-    };
-
-    const dataToSave = {
-        imageKey: imageKey,
-        ...firestoreData
-    };
+    const requestHeaders: Record<string, string> = {};
+    event.request.headers.forEach((value, key) => { requestHeaders[key] = value; });
 
     try {
-        const docRef = await addDoc(collection(db, "imageAccessLog"), dataToSave);
-    } catch (e) {
-        console.error("Error adding document to Firestore: ", e);
-        // Decide if you want to fail the request or just log. For now, just log.
+        await addDoc(collection(db, 'imageAccessLog'), {
+            timestamp: serverTimestamp(),
+            method: event.request.method,
+            url: event.request.url,
+            pathname: event.url.pathname,
+            headers: requestHeaders,
+            imageKey
+        });
+    } catch (error) {
+        imgLog.warn('access_log_write_failed', { error });
     }
-    
 
     const userAgent = event.request.headers.get('user-agent') || 'unknown';
     const referer = event.request.headers.get('referer') || 'unknown';
-    logServerSideEvent('image_viewed', { event_category: 'engagement', event_label: pathname, custom_parameter: 'image_request', user_agent: userAgent, page_referrer: referer });
-    let imageBase64 = await GenerateImageFromRoute(event.request,pathname);
+    logServerSideEvent('image_viewed', {
+        event_category: 'engagement',
+        event_label: pathname,
+        custom_parameter: 'image_request',
+        user_agent: userAgent,
+        page_referrer: referer
+    });
+
+    const stop = imgLog.time('generate', { imageKey });
+    const imageBase64 = await GenerateImageFromRoute(event.request, pathname);
+    stop({ ok: imageBase64.length > 0, bytes: imageBase64.length });
+
+    if (!imageBase64) {
+        return new Response('Image generation failed', { status: 502 });
+    }
+
     const imageBuffer = Buffer.from(imageBase64, 'base64');
     return new Response(imageBuffer, {
         status: 200,
         headers: {
             'Content-Type': 'image/png',
             'Cache-Control': 'public, max-age=3600, immutable',
-            'X-Robots-Tag': 'noindex, nofollow',
+            'X-Robots-Tag': 'noindex, nofollow'
         }
     });
 }
 
-
-
 export const handle: Handle = async ({ event, resolve }) => {
+    const requestId = event.request.headers.get('x-request-id') ?? generateRequestId();
 
-    let validationCookie = event.cookies.get('__session');
-    console.log("Request Path:", event.url.pathname);
+    return withRequestContext(
+        requestId,
+        {
+            method: event.request.method,
+            path: event.url.pathname
+        },
+        async () => {
+            const validationCookie = event.cookies.get('__session');
+            event.locals = {
+                validationCookie: validationCookie || undefined,
+                requestId
+            };
 
-
-    event.locals =
-    {
-        validationCookie: validationCookie || undefined
-    }
-    const userAgent = event.request.headers.get('user-agent') || '';
-    if (!userAgent) {
-        // Block requests with no user-agent
-        logServerSideEvent('blocked_access', { event_category: 'security', event_label: 'no_user_agent', user_agent: 'empty' });
-        return new Response('User-Agent header is required', {
-            status: 403, // Forbidden
-            headers: {
-                'Content-Type': 'text/plain',
-                'X-Robots-Tag': 'noindex, nofollow',
+            const userAgent = event.request.headers.get('user-agent') || '';
+            if (!userAgent) {
+                log.warn('blocked_no_user_agent');
+                logServerSideEvent('blocked_access', { event_category: 'security', event_label: 'no_user_agent', user_agent: 'empty' });
+                return new Response('User-Agent header is required', {
+                    status: 403,
+                    headers: { 'Content-Type': 'text/plain', 'X-Robots-Tag': 'noindex, nofollow' }
+                });
             }
-        });
-    }
 
-
-
-    const isBot = /bot|crawl|spider|slurp|mediapartners/i.test(userAgent);
-    //allow DiscordBot
-    const isDiscordBot = /Discordbot/i.test(userAgent);
-    console.log("User-Agent:", userAgent);
-    if (isBot && !isDiscordBot) {
-        // Log bot access
-        logServerSideEvent('bot_access', { event_category: 'engagement', event_label: event.url.pathname, user_agent: userAgent });
-        return new Response(null, {
-            status: 204, // No Content
-            headers: {
-                'Cache-Control': 'private, no-cache',
-                'X-Robots-Tag': 'noindex, nofollow',
+            const isBot = /bot|crawl|spider|slurp|mediapartners/i.test(userAgent);
+            const isDiscordBot = /Discordbot/i.test(userAgent);
+            if (isBot && !isDiscordBot) {
+                log.info('bot_blocked', { user_agent: userAgent });
+                logServerSideEvent('bot_access', { event_category: 'engagement', event_label: event.url.pathname, user_agent: userAgent });
+                return new Response(null, {
+                    status: 204,
+                    headers: { 'Cache-Control': 'private, no-cache', 'X-Robots-Tag': 'noindex, nofollow' }
+                });
             }
-        });
-    }
 
-    let pathname = event.url.pathname;
-    if (pathname.endsWith('.png') || pathname.endsWith('.jpg') || pathname.endsWith('.jpeg') || pathname.endsWith('.gif') || pathname.endsWith('.webp') || pathname.endsWith('.avif') || pathname.endsWith('.svg')) {
-        // Not favicon
-        if (pathname.endsWith('favicon.png') || pathname.endsWith('favicon.ico')) {
-            return new Response(null, {
-                status: 204,
-                headers: {
-                    'Cache-Control': 'public, max-age=3600, immutable',
-                    "X-Robots-Tag": "noindex, nofollow",
+            const stop = log.time('request', { user_agent: userAgent });
+            try {
+                const pathname = event.url.pathname;
+                if (/\.(png|jpg|jpeg|gif|webp|avif|svg)$/i.test(pathname)) {
+                    if (/favicon\.(png|ico)$/i.test(pathname)) {
+                        return new Response(null, {
+                            status: 204,
+                            headers: { 'Cache-Control': 'public, max-age=3600, immutable', 'X-Robots-Tag': 'noindex, nofollow' }
+                        });
+                    }
+                    const response = await handleImageRequest(event, pathname);
+                    stop({ status: response.status, kind: 'image' });
+                    return response;
                 }
-            });
-        }
-        return await handleImageRequest(event, pathname);
-    }
 
-    const response = await resolve(event);
-    response.headers.set('Cache-Control', 'private, no-cache');
-    response.headers.set("vary", "Cookie, Accept");
-    response.headers.set('X-Robots-Tag', 'noindex, nofollow'); // Prevent indexing of this page
-    return response;
+                const method = event.request.method;
+                const isAppCheckPost = Boolean(
+                    event.request.headers.get('x-__session') || event.request.headers.get('__session')
+                );
+                if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && !isAppCheckPost) {
+                    const response = await HandleAction(event.request);
+                    stop({ status: response.status, kind: 'action', method });
+                    return response;
+                }
+
+                const response = await resolve(event);
+                response.headers.set('Cache-Control', 'private, no-cache');
+                response.headers.set('vary', 'Cookie, Accept');
+                response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+                stop({ status: response.status, kind: 'page' });
+                return response;
+            } catch (error) {
+                stop({ status: 500, error });
+                log.error('request_failed', { error });
+                throw error;
+            }
+        }
+    );
 };
