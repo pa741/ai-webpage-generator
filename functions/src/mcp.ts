@@ -45,17 +45,19 @@ function instrument<Args extends Record<string, unknown>>(
 }
 
 const registerTools = (mcp: McpServer, authContext: AuthContext) => {
+    const userId = authContext.userId;
+
     mcp.registerTool("GetAllComponents", {
         description: "Returns all existing reusable components as summaries.",
         inputSchema: {}
-    }, instrument("GetAllComponents", async () => GetAllComponents()));
+    }, instrument("GetAllComponents", async () => GetAllComponents(userId)));
 
     mcp.registerTool("GetComponents", {
         description: "Finds existing reusable components that match a specific purpose.",
         inputSchema: {
             purpose: z.string().min(1)
         }
-    }, instrument("GetComponents", async ({ purpose }) => GetComponents(purpose)));
+    }, instrument("GetComponents", async ({ purpose }) => GetComponents(purpose, userId)));
 
     mcp.registerTool("CreateComponent", {
         description: "Creates a new reusable JavaScript web component and stores it in Firebase.",
@@ -63,15 +65,17 @@ const registerTools = (mcp: McpServer, authContext: AuthContext) => {
             id: z.string().min(1),
             prompt: z.string().min(1)
         }
-    }, instrument("CreateComponent", async ({ id, prompt }) => CreateComponent(id, prompt)));
+    }, instrument("CreateComponent", async ({ id, prompt }) => CreateComponent(id, prompt, userId)));
 
-    mcp.registerTool("UpdateComponent", {
-        description: "Updates an existing reusable JavaScript web component and stores the new version.",
-        inputSchema: {
-            id: z.string().min(1),
-            prompt: z.string().min(1)
-        }
-    }, instrument("UpdateComponent", async ({ id, prompt }) => UpdateComponent(id, prompt)));
+    if (userId) {
+        mcp.registerTool("UpdateComponent", {
+            description: "Updates an existing reusable JavaScript web component and stores the new version as a per-user override of the default.",
+            inputSchema: {
+                id: z.string().min(1),
+                prompt: z.string().min(1)
+            }
+        }, instrument("UpdateComponent", async ({ id, prompt }) => UpdateComponent(id, prompt, userId)));
+    }
 
     mcp.registerTool("GetWord", {
         description: "Returns metadata for one exact dictionary word match.",

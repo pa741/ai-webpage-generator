@@ -8,12 +8,13 @@ export const load: PageServerLoad = async (event) => {
         return;
     }
 
+    const { idToken, userId } = event.locals;
     const pathname = event.url.pathname;
     const generated = pathname === '/'
-        ? await GenerateHomePage(event.request)
-        : await GenerateHtml(event.request, pathname.replace(/^\//, ''));
+        ? await GenerateHomePage(event.request, idToken)
+        : await GenerateHtml(event.request, pathname.replace(/^\//, ''), idToken);
 
-    const componentScripts = await resolveComponentScripts(generated.usedComponentIds);
+    const componentScripts = await resolveComponentScripts(generated.usedComponentIds, userId);
 
     return {
         html: generated.html,

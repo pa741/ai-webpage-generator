@@ -5,6 +5,8 @@ declare global {
         interface Locals {
             validationCookie: string | undefined;
             requestId: string;
+            userId?: string;
+            idToken?: string;
         }
         // interface PageData {}
         // interface Platform {}
@@ -16,9 +18,13 @@ import { logServerSideEvent } from '$lib/server_analytics';
 import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
 import { generateRequestId, logger, withRequestContext } from '$lib/logger';
 import type { Handle, RequestEvent } from '@sveltejs/kit';
+import { getAuth } from 'firebase-admin/auth';
 import './lib/firebase_admin';
 
 const log = logger.child('hooks');
+
+const AUTH_COOKIE_NAME = 'authToken';
+const SESSION_AUTH_PATH = '/__session-auth';
 
 async function handleImageRequest(event: RequestEvent, pathname: string): Promise<Response> {
     const imgLog = log.child('image', { route: pathname });
@@ -73,6 +79,19 @@ async function handleImageRequest(event: RequestEvent, pathname: string): Promis
     });
 }
 
+async function resolveAuth(event: RequestEvent): Promise<{ userId?: string; idToken?: string }> {
+    const idToken = event.cookies.get(AUTH_COOKIE_NAME);
+    if (!idToken) return {};
+    try {
+        const decoded = await getAuth().verifyIdToken(idToken);
+        return { userId: decoded.uid, idToken };
+    } catch (error) {
+        log.warn('auth_cookie_invalid', { error });
+        event.cookies.delete(AUTH_COOKIE_NAME, { path: '/' });
+        return {};
+    }
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
     const requestId = event.request.headers.get('x-request-id') ?? generateRequestId();
 
@@ -84,9 +103,12 @@ export const handle: Handle = async ({ event, resolve }) => {
         },
         async () => {
             const validationCookie = event.cookies.get('__session');
+            const auth = await resolveAuth(event);
             event.locals = {
                 validationCookie: validationCookie || undefined,
-                requestId
+                requestId,
+                userId: auth.userId,
+                idToken: auth.idToken
             };
 
             const userAgent = event.request.headers.get('user-agent') || '';
@@ -110,7 +132,7 @@ export const handle: Handle = async ({ event, resolve }) => {
                 });
             }
 
-            const stop = log.time('request', { user_agent: userAgent });
+            const stop = log.time('request', { user_agent: userAgent, authenticated: Boolean(auth.userId) });
             try {
                 const pathname = event.url.pathname;
                 if (/\.(png|jpg|jpeg|gif|webp|avif|svg)$/i.test(pathname)) {
@@ -129,8 +151,9 @@ export const handle: Handle = async ({ event, resolve }) => {
                 const isAppCheckPost = Boolean(
                     event.request.headers.get('x-__session') || event.request.headers.get('__session')
                 );
-                if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && !isAppCheckPost) {
-                    const response = await HandleAction(event.request);
+                const isSessionAuth = pathname === SESSION_AUTH_PATH;
+                if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && !isAppCheckPost && !isSessionAuth) {
+                    const response = await HandleAction(event.request, auth.idToken);
                     stop({ status: response.status, kind: 'action', method });
                     return response;
                 }

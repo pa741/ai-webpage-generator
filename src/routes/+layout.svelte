@@ -11,6 +11,8 @@
   import GoogleLogin from "../Components/GoogleLogin.svelte";
   import ThreeCanvas from "../Components/ThreeCanvas.svelte";
   let token = data.token;
+  import "@twind/with-web-components";
+
   /*
   onMount(() => {
     if (browser && TextContent.element && !customElements.get("text-content")) {
@@ -18,13 +20,16 @@
     }
   }); */
   $effect(() => {
-    if (browser && page.url) {
-      trackPageView(page.url.pathname, page.url.href);
+    if (browser) {
+      window.addEventListener("error", (event) => {
+        console.error("Custom element error:", event.error);
+      });
+      if (page.url) {
+        trackPageView(page.url.pathname, page.url.href);
+      }
     }
   });
 </script>
-
-
 
 <div class="app">
   {#if token}
@@ -47,5 +52,12 @@
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+  }
+
+  .auth-strip {
+    position: fixed;
+    top: 0.75rem;
+    right: 0.75rem;
+    z-index: 50;
   }
 </style>

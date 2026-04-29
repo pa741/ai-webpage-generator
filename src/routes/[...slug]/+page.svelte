@@ -42,7 +42,7 @@
   {@html style}
   {#if data.componentScripts}
     {#each data.componentScripts as scriptRef (scriptRef.id)}
-      <script src={scriptRef.src} defer></script>
+      <script type="module" src={scriptRef.src} defer></script>
     {/each}
   {/if}
 </svelte:head>

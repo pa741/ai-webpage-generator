@@ -15,6 +15,8 @@
         onAuthStateChanged,
         signInWithPopup,
         signInWithRedirect,
+        connectAuthEmulator,
+        signOut,
         type User
     } from "firebase/auth";
     import { app } from "$lib/firebase.js";
@@ -26,14 +28,39 @@
     let errorMessage = $state<string>("");
 
     const auth = getAuth(app);
+    connectAuthEmulator(auth, "http://localhost:9099");
     const provider = new GoogleAuthProvider();
 
+    async function syncSessionCookie(user: User) {
+        try {
+            const idToken = await user.getIdToken();
+            await fetch("/__session-auth", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ idToken })
+            });
+        } catch (error) {
+            console.error("Failed to sync auth cookie", error);
+        }
+    }
+
+    async function clearSessionCookie() {
+        try {
+            await fetch("/__session-auth", { method: "DELETE" });
+        } catch (error) {
+            console.error("Failed to clear auth cookie", error);
+        }
+    }
+
     onMount(() => {
-        const unsubscribe = onAuthStateChanged(auth, (user) => {
+        const unsubscribe = onAuthStateChanged(auth, async (user) => {
             currentUser = user;
             loading = false;
             if (user) {
                 errorMessage = "";
+                await syncSessionCookie(user);
+            } else {
+                await clearSessionCookie();
             }
         });
 
@@ -72,14 +99,31 @@
                     : "Google sign-in failed. Please try again.";
         }
     }
+
+    async function logoutFromGoogle() {
+        try {
+            await signOut(auth);
+        } catch (error) {
+            errorMessage =
+                error instanceof Error
+                    ? error.message
+                    : "Sign-out failed. Please try again.";
+        }
+    }
 </script>
 
-{#if !loading && !currentUser}
+{#if !loading}
     <div class="google-login">
-        <button type="button" class="google-button" onclick={loginWithGoogle}>
-            <span class="google-mark" aria-hidden="true">G</span>
-            <span>{label}</span>
-        </button>
+        {#if !currentUser}
+            <button type="button" class="google-button" onclick={loginWithGoogle}>
+                <span class="google-mark" aria-hidden="true">G</span>
+                <span>{label}</span>
+            </button>
+        {:else}
+            <button type="button" class="google-signout" onclick={logoutFromGoogle}>
+                Sign out{currentUser.displayName ? ` (${currentUser.displayName})` : ""}
+            </button>
+        {/if}
 
         {#if errorMessage}
             <p class="google-error">{errorMessage}</p>
@@ -126,6 +170,22 @@
         justify-content: center;
         line-height: 1;
         width: 1.4rem;
+    }
+
+    .google-signout {
+        background: transparent;
+        border: 1px solid #d1d5db;
+        border-radius: 999px;
+        color: #374151;
+        cursor: pointer;
+        font-size: 0.85rem;
+        padding: 0.4rem 0.85rem;
+        transition: background-color 120ms ease, border-color 120ms ease;
+    }
+
+    .google-signout:hover {
+        background-color: #f3f4f6;
+        border-color: #9ca3af;
     }
 
     .google-error {

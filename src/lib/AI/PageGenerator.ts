@@ -99,14 +99,20 @@ function resolveMcpUrl(request: Request): URL | null {
     }
 }
 
-async function withMcpClient<T>(request: Request, action: (client: Client) => Promise<T>): Promise<T | null> {
+async function withMcpClient<T>(
+    request: Request,
+    action: (client: Client) => Promise<T>,
+    idToken?: string
+): Promise<T | null> {
     const mcpUrl = resolveMcpUrl(request);
     if (!mcpUrl) {
         log.error('mcp.url_unresolved');
         return null;
     }
 
-    const authorizationHeader = request.headers.get('authorization');
+    const authorizationHeader = idToken
+        ? `Bearer ${idToken}`
+        : request.headers.get('authorization');
     const transport = new StreamableHTTPClientTransport(mcpUrl, {
         requestInit: authorizationHeader
             ? { headers: { Authorization: authorizationHeader } }
@@ -186,6 +192,7 @@ async function runMcpToolLoop(input: {
     allowTool?: (name: string) => boolean;
     responseFormat?: 'text' | 'json_object';
     scope: string;
+    idToken?: string;
 }): Promise<ToolLoopResult> {
     const result: ToolLoopResult = { finalText: '', toolInvocations: [] };
     const loopLog = log.child(`loop.${input.scope}`, {
@@ -303,7 +310,7 @@ async function runMcpToolLoop(input: {
             tool_calls_total: result.toolInvocations.length
         });
         return result;
-    });
+    }, input.idToken);
 
     return outcome ?? result;
 }
@@ -314,8 +321,8 @@ export interface DesignedPage {
     usedComponentIds: string[];
 }
 
-export async function DesignPage(request: Request, route: string): Promise<DesignedPage> {
-    const stop = log.child('design').time('design', { route, model: pageDesignerPrompt.model });
+export async function DesignPage(request: Request, route: string, idToken?: string): Promise<DesignedPage> {
+    const stop = log.child('design').time('design', { route, model: pageDesignerPrompt.model, authenticated: Boolean(idToken) });
     trackAIInteraction('page_designer_request', pageDesignerPrompt.model);
 
     const allowTool = (name: string) => COMPONENT_TOOLS.has(name) || READ_ONLY_DICTIONARY_TOOLS.has(name);
@@ -327,7 +334,8 @@ export async function DesignPage(request: Request, route: string): Promise<Desig
         userPrompt: JSON.stringify({ route }),
         allowTool,
         responseFormat: 'json_object',
-        scope: 'designer'
+        scope: 'designer',
+        idToken
     });
 
     const pageSpec = parsePageSpec(finalText);
@@ -464,8 +472,8 @@ export interface GeneratedPage {
     usedComponentIds: string[];
 }
 
-export async function GenerateHtml(request: Request, route: string, _referer?: string | null): Promise<GeneratedPage> {
-    const designed = await DesignPage(request, route);
+export async function GenerateHtml(request: Request, route: string, idToken?: string): Promise<GeneratedPage> {
+    const designed = await DesignPage(request, route, idToken);
     log.info('page_designed', {
         route,
         prompt_chars: designed.rawDesignerOutput,
@@ -481,8 +489,8 @@ export async function GenerateHtml(request: Request, route: string, _referer?: s
     };
 }
 
-export async function GenerateHomePage(request: Request): Promise<GeneratedPage> {
-    return GenerateHtml(request, '');
+export async function GenerateHomePage(request: Request, idToken?: string): Promise<GeneratedPage> {
+    return GenerateHtml(request, '', idToken);
 }
 
 async function GetImageDescriptionFromRoute(route: string): Promise<string> {
@@ -558,7 +566,7 @@ export async function GenerateImageFromRoute(_request: Request, route: string): 
     }
 }
 
-export async function HandleAction(request: Request): Promise<Response> {
+export async function HandleAction(request: Request, idToken?: string): Promise<Response> {
     const url = new URL(request.url);
     const route = url.pathname;
     const method = request.method;
@@ -583,11 +591,12 @@ export async function HandleAction(request: Request): Promise<Response> {
     //    ? bodyJson.outputFormat
     //    : '{ "success": boolean, "message": string, "data": any }';
 
+    const authenticated = Boolean(idToken || request.headers.get('authorization'));
     trackAIInteraction('action_runner_request', actionRunnerPrompt.model);
     actionLog.info('action_received', {
         body_keys: Object.keys(bodyJson),
         output_format: outputFormat,
-        authenticated: Boolean(request.headers.get('authorization'))
+        authenticated
     });
 
     const allowTool = (name: string) => !COMPONENT_TOOLS.has(name);
@@ -598,7 +607,7 @@ export async function HandleAction(request: Request): Promise<Response> {
         body: bodyJson,
         rawBody: bodyJson && Object.keys(bodyJson).length > 0 ? undefined : bodyText,
         outputFormat,
-        authenticated: Boolean(request.headers.get('authorization'))
+        authenticated
     });
 
     const { finalText, toolInvocations } = await runMcpToolLoop({
@@ -608,7 +617,8 @@ export async function HandleAction(request: Request): Promise<Response> {
         userPrompt,
         allowTool,
         responseFormat: 'json_object',
-        scope: 'action'
+        scope: 'action',
+        idToken
     });
 
     const json = parseActionJson(finalText, toolInvocations);
