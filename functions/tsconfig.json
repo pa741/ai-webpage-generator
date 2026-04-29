@@ -5,7 +5,9 @@
     "esModuleInterop": true,
     "noImplicitReturns": true,
     "noUnusedLocals": true,
+    "skipLibCheck": true,
     "outDir": "lib",
+    "rootDir": "src",
     "sourceMap": true,
     "strict": true,
     "target": "es2017"

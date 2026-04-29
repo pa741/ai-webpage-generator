@@ -15,11 +15,12 @@
   "main": "lib/index.js",
   "dependencies": {
     "@ai-sdk/cerebras": "^2.0.45",
+    "@ai-sdk/google": "^3.0.64",
     "@cloudflare/turnstile-firebase-app-check": "^0.0.5",
     "@google/genai": "^1.5.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ai": "^6.0.168",
-    "axios": "^1.11.0",
+    "axios": "^1.15.2",
     "cors": "^2.8.6",
     "dictionary-api-client": "^1.1.0",
     "express": "^5.2.1",

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "emulate": "set \"GOOGLE_APPLICATION_CREDENTIALS=credential.json\" && firebase emulators:start --import=./emulator-data --export-on-exit",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
@@ -21,6 +22,8 @@
     "vite": "^6.3.5"
   },
   "dependencies": {
+    "@ai-sdk/cerebras": "^2.0.45",
+    "@ai-sdk/google": "^3.0.64",
     "@cerebras/cerebras_cloud_sdk": "^1.35.0",
     "@cloudflare/turnstile-firebase-app-check": "^0.0.5",
     "@google/genai": "^1.50.1",

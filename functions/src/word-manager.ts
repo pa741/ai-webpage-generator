@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
+import { createHash } from "node:crypto";
 
 const dynamicImport = new Function("specifier", "return import(specifier);") as (specifier: string) => Promise<Record<string, unknown>>;
 
@@ -35,12 +36,6 @@ interface DictionaryApiResponse {
 
 interface DictionaryApiClient {
     getDefinitionFor(input: { word: string; lang?: string }): Promise<DictionaryApiResponse>;
-}
-
-interface WordsOfTheDayClient {
-    wordThink(date?: string): Promise<unknown>;
-    merriamWebster(date?: string): Promise<unknown>;
-    dictionaryWord(date?: string): Promise<unknown>;
 }
 
 interface FavoriteWordDocument {
@@ -129,28 +124,18 @@ export async function GetRandomWord(minLength?: number, maxLength?: number): Pro
     };
 }
 
-export async function GetWordOfTheDay(providerInput?: string, dateInput?: string): Promise<Record<string, unknown>> {
-    const provider = normalizeProvider(providerInput);
+export async function GetWordOfTheDay( dateInput?: string): Promise<Record<string, unknown>> {
+    //const provider = "wordThink";
     const date = normalizeWordOfDayDate(dateInput);
-    const wordsOfTheDayClient = await getWordsOfTheDayClient();
-
-    const result = await callWordOfDayProvider(wordsOfTheDayClient, provider, date);
-
-    if (typeof result === "string") {
-        return {
-            provider,
-            date,
-            success: false,
-            error: result
-        };
-    }
-
+    const words = await getWordCorpus();
+    let seedOfDay = date ? date : new Date().toISOString().slice(0, 10);
+    seedOfDay = seedOfDay.replace(/-/g, "/");
+    const index = createHash("sha256").update(seedOfDay).digest().readUInt32BE(0);
+    const wordOfTheDay = words[index % words.length];
     return {
-        provider,
-        date,
-        success: true,
-        data: result
+        word: wordOfTheDay,
     };
+
 }
 
 export async function AddFavoriteWord(userId: string, word: string): Promise<Record<string, unknown>> {
@@ -308,59 +293,8 @@ async function getDictionaryApiClient(): Promise<DictionaryApiClient> {
     };
 }
 
-async function getWordsOfTheDayClient(): Promise<WordsOfTheDayClient> {
-    const wordsOfTheDayModule = await dynamicImport("words-of-the-day");
-    const moduleObject = (wordsOfTheDayModule.default ?? wordsOfTheDayModule) as Record<string, unknown>;
 
-    const wordThink = readFunction(moduleObject, "wordThink");
-    const merriamWebster = readFunction(moduleObject, "merriamWebster", "merrimWebster");
-    const dictionaryWord = readFunction(moduleObject, "dictionaryWord", "dictionarWord");
 
-    return {
-        wordThink,
-        merriamWebster,
-        dictionaryWord
-    };
-}
-
-function readFunction(source: Record<string, unknown>, ...keys: string[]): (date?: string) => Promise<unknown> {
-    for (const key of keys) {
-        const candidate = source[key];
-        if (typeof candidate === "function") {
-            return candidate as (date?: string) => Promise<unknown>;
-        }
-    }
-
-    throw new Error(`Could not load words-of-the-day method '${keys.join(" or ")}'.`);
-}
-
-async function callWordOfDayProvider(client: WordsOfTheDayClient, provider: WordOfDayProvider, date: string | null): Promise<unknown> {
-    if (provider === "wordThink") {
-        return date ? client.wordThink(date) : client.wordThink();
-    }
-
-    if (provider === "dictionaryWord") {
-        return date ? client.dictionaryWord(date) : client.dictionaryWord();
-    }
-
-    return date ? client.merriamWebster(date) : client.merriamWebster();
-}
-
-function normalizeProvider(providerInput?: string): WordOfDayProvider {
-    if (!providerInput) {
-        return "merriamWebster";
-    }
-
-    if (isWordOfDayProvider(providerInput)) {
-        return providerInput;
-    }
-
-    throw new Error(`Invalid provider '${providerInput}'. Allowed providers: ${WORD_OF_DAY_PROVIDERS.join(", ")}.`);
-}
-
-function isWordOfDayProvider(providerInput: string): providerInput is WordOfDayProvider {
-    return WORD_OF_DAY_PROVIDERS.includes(providerInput as WordOfDayProvider);
-}
 
 function normalizeWordOfDayDate(dateInput?: string): string | null {
     if (!dateInput) {

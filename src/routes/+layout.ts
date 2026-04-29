@@ -5,7 +5,7 @@ import { getToken } from 'firebase/app-check';
 
 export const load: LayoutLoad = async ({ data }) => {
     if (data && data.token) {
-        return { token: data.token };
+        return { token: data.token};
     }
     if (!check || !browser) {
         return {};

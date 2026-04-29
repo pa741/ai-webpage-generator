@@ -1,16 +1,14 @@
 
-import { Content, FunctionDeclaration, GoogleGenAI, Type } from "@google/genai";
+import { generateText, stepCountIs, tool } from "ai";
 import { getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { logger } from "./logger";
+import { resolveLanguageModel, resolveProviderName } from "./ai-model-provider";
 import componentGeneratorPrompt from "../prompts/component_generator.json";
+import { z } from "zod";
 
 const log = logger.child("component-manager");
-
-const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY ?? "AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0"
-});
 
 const COMPONENTS_COLLECTION = "components";
 const COMPONENTS_STORAGE_PREFIX = "components";
@@ -19,7 +17,7 @@ const MAX_RECURSION_DEPTH = 3;
 
 export interface ComponentSummary {
     id: string;
-    shortDeck: string;
+    shortDesc: string;
     gsPath: string;
 }
 
@@ -31,7 +29,7 @@ interface ComponentDocument extends ComponentSummary {
 }
 
 interface GeneratedComponentPayload {
-    shortDeck: string;
+    shortDesc: string;
     dependencies: string[];
     code: string;
 }
@@ -43,68 +41,59 @@ interface ToolExecutionContext {
 
 type ComponentMutationMode = "create" | "update";
 
-export const componentToolDeclarations: FunctionDeclaration[] = [
+interface ComponentToolDeclaration {
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+}
+
+export const componentToolDeclarations: ComponentToolDeclaration[] = [
     {
         name: "GetAllComponents",
         description: "Returns all existing reusable components as summaries.",
-        parameters: {
-            type: Type.OBJECT,
-            properties: {}
-        }
+        inputSchema: {}
     },
     {
         name: "GetComponents",
         description: "Finds existing reusable components that match a specific purpose.",
-        parameters: {
-            type: Type.OBJECT,
-            properties: {
-                purpose: {
-                    type: Type.STRING,
-                    description: "Short description of what kind of component you need."
-                }
-            },
-            required: ["purpose"]
+        inputSchema: {
+            purpose: {
+                type: "string",
+                description: "Short description of what kind of component you need."
+            }
         }
     },
     {
         name: "CreateComponent",
         description: "Creates a new reusable JavaScript web component and stores it in Firebase.",
-        parameters: {
-            type: Type.OBJECT,
-            properties: {
-                id: {
-                    type: Type.STRING,
-                    description: "Unique component ID, preferably kebab-case."
-                },
-                prompt: {
-                    type: Type.STRING,
-                    description: "Specification for the component to generate."
-                }
+        inputSchema: {
+            id: {
+                type: "string",
+                description: "Unique component ID, preferably kebab-case."
             },
-            required: ["id", "prompt"]
+            prompt: {
+                type: "string",
+                description: "Specification for the component to generate."
+            }
         }
     },
     {
         name: "UpdateComponent",
         description: "Updates an existing reusable JavaScript web component and stores the new version.",
-        parameters: {
-            type: Type.OBJECT,
-            properties: {
-                id: {
-                    type: Type.STRING,
-                    description: "ID of the existing component to update."
-                },
-                prompt: {
-                    type: Type.STRING,
-                    description: "Requested changes to apply to the component."
-                }
+        inputSchema: {
+            id: {
+                type: "string",
+                description: "ID of the existing component to update."
             },
-            required: ["id", "prompt"]
+            prompt: {
+                type: "string",
+                description: "Requested changes to apply to the component."
+            }
         }
     }
 ];
 
-export const componentTools = [{ functionDeclarations: componentToolDeclarations }];
+export const componentTools = componentToolDeclarations;
 
 export async function executeComponentToolCall(toolName: string, args: unknown): Promise<unknown> {
     return executeComponentToolCallInternal(toolName, args, { depth: 0, lineage: [] });
@@ -119,7 +108,7 @@ export async function GetAllComponents(): Promise<ComponentSummary[]> {
         const data = doc.data() as Partial<ComponentDocument>;
         return {
             id: doc.id,
-            shortDeck: typeof data.shortDeck === "string" ? data.shortDeck : "",
+            shortDesc: typeof data.shortDesc === "string" ? data.shortDesc : "",
             gsPath: typeof data.gsPath === "string" ? data.gsPath : ""
         };
     });
@@ -139,7 +128,7 @@ export async function GetComponents(purpose: string): Promise<ComponentSummary[]
 
     const scored = allComponents
         .map((component) => {
-            const haystack = `${component.id} ${component.shortDeck}`.toLowerCase();
+            const haystack = `${component.id} ${component.shortDesc}`.toLowerCase();
             const score = terms.reduce((acc, term) => acc + (haystack.includes(term) ? term.length : 0), 0);
             return { component, score };
         })
@@ -221,7 +210,7 @@ async function createOrUpdateComponent(
         stop({ reused: true });
         return {
             id,
-            shortDeck: existingData.shortDeck ?? "",
+            shortDesc: existingData.shortDesc ?? "",
             gsPath: existingData.gsPath
         };
     }
@@ -242,7 +231,7 @@ async function createOrUpdateComponent(
 
     const payload: Record<string, unknown> = {
         id,
-        shortDeck: generation.shortDeck,
+        shortDesc: generation.shortDesc,
         gsPath,
         prompt,
         dependencies: generation.dependencies,
@@ -262,7 +251,7 @@ async function createOrUpdateComponent(
 
     return {
         id,
-        shortDeck: generation.shortDeck,
+        shortDesc: generation.shortDesc,
         gsPath
     };
 }
@@ -281,107 +270,111 @@ async function generateComponentCode(input: {
         input.previousCode
             ? `Existing source to update:\n\n${input.previousCode}`
             : "No existing source was found for this component.",
-        "Return strict JSON only with keys: shortDeck, dependencies, code."
+        "Return strict JSON only with keys: shortDesc, dependencies, code."
     ].join("\n\n");
 
     const systemInstruction = componentGeneratorPrompt.prompt;
     const model = componentGeneratorPrompt.model;
 
-    let conversationHistory: Content[] = [
-        {
-            role: "user",
-            parts: [{ text: userMessage }]
-        }
-    ];
-
     const genLog = log.child("gen", {
         id: input.id,
         mode: input.mode,
         depth: input.context.depth,
-        model
-    });
-
-    const callStop = genLog.time("gemini_call", { iteration: 0 });
-    let aiResponse = await ai.models.generateContent({
         model,
-        config: { systemInstruction, tools: componentTools },
-        contents: conversationHistory
+        provider: resolveProviderName(model)
     });
-    callStop({ has_function_calls: Boolean(aiResponse.functionCalls?.length) });
 
     let toolCallCount = 0;
-    let iteration = 1;
 
-    while (aiResponse.functionCalls && aiResponse.functionCalls.length > 0) {
-        if (toolCallCount >= MAX_TOOL_CALLS_PER_GENERATION) {
-            genLog.warn("max_tool_calls_exceeded", { toolCallCount });
+    const executeWithBudget = async (toolName: string, fn: () => Promise<unknown>): Promise<unknown> => {
+        toolCallCount += 1;
+        if (toolCallCount > MAX_TOOL_CALLS_PER_GENERATION) {
             throw new Error(`Exceeded max tool calls (${MAX_TOOL_CALLS_PER_GENERATION}) while generating component '${input.id}'.`);
         }
 
-        conversationHistory.push({
-            role: "assistant",
-            parts: aiResponse.functionCalls.map((functionCall) => ({
-                functionCall: {
-                    name: functionCall.name,
-                    args: functionCall.args
-                }
-            }))
+        const toolStop = genLog.time("tool_call", {
+            tool: toolName,
+            tool_index: toolCallCount
         });
 
-        const toolResults = [];
-        for (const functionCall of aiResponse.functionCalls) {
-            toolCallCount += 1;
-            const toolStop = genLog.time("tool_call", {
-                tool: functionCall.name,
-                iteration,
-                tool_index: toolCallCount
-            });
-            try {
-                const result = await executeComponentToolCallInternal(functionCall.name ?? "", functionCall.args, {
+        try {
+            const result = await fn();
+            toolStop({ ok: true });
+            return result;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Unknown tool execution error";
+            toolStop({ ok: false, error: message });
+            throw error;
+        }
+    };
+
+    const llmStop = genLog.time("llm_call");
+    const result = await generateText({
+        model: resolveLanguageModel(model),
+        system: systemInstruction,
+        prompt: userMessage,
+        
+        tools: {
+            GetAllComponents: tool({
+                description: "Returns all existing reusable components as summaries.",
+                inputSchema: z.object({}),
+                execute: async () => executeWithBudget("GetAllComponents", () => GetAllComponents())
+            }),
+            GetComponents: tool({
+                description: "Finds existing reusable components that match a specific purpose.",
+                inputSchema: z.object({
+                    purpose: z.string().min(1).describe("Short description of what kind of component you need.")
+                }),
+                execute: async ({ purpose }) => executeWithBudget("GetComponents", () => GetComponents(purpose))
+            }),
+            CreateComponent: tool({
+                description: "Creates a new reusable JavaScript web component and stores it in Firebase.",
+                inputSchema: z.object({
+                    id: z.string().min(1).describe("Unique component ID, preferably kebab-case."),
+                    prompt: z.string().min(1).describe("Specification for the component to generate.")
+                }),
+                execute: async ({ id, prompt }) => executeWithBudget("CreateComponent", () => createOrUpdateComponent("create", id, prompt, {
                     depth: input.context.depth + 1,
                     lineage: [...input.context.lineage]
-                });
-
-                toolResults.push({
-                    functionResponse: {
-                        name: functionCall.name,
-                        response: { result }
-                    }
-                });
-                toolStop({ ok: true });
-            } catch (error) {
-                const message = error instanceof Error ? error.message : "Unknown tool execution error";
-                toolResults.push({
-                    functionResponse: {
-                        name: functionCall.name,
-                        response: { error: message }
-                    }
-                });
-                toolStop({ ok: false, error: message });
-                genLog.warn("tool_failed", { tool: functionCall.name, error: message });
-            }
+                }))
+            }),
+            UpdateComponent: tool({
+                description: "Updates an existing reusable JavaScript web component and stores the new version.",
+                inputSchema: z.object({
+                    id: z.string().min(1).describe("ID of the existing component to update."),
+                    prompt: z.string().min(1).describe("Requested changes to apply to the component.")
+                }),
+                execute: async ({ id, prompt }) => executeWithBudget("UpdateComponent", () => createOrUpdateComponent("update", id, prompt, {
+                    depth: input.context.depth + 1,
+                    lineage: [...input.context.lineage]
+                }))
+            })
+        },
+        stopWhen: stepCountIs(MAX_TOOL_CALLS_PER_GENERATION + 1),
+        onStepFinish(step) {
+            genLog.debug("step_finished", {
+                step_number: step.stepNumber,
+                tool_calls: step.toolCalls.length,
+                finish_reason: step.finishReason
+            });
         }
+    });
+    llmStop({
+        ok: true,
+        steps: result.steps.length,
+        tool_calls_total: toolCallCount,
+        finish_reason: result.finishReason,
+        total_tokens: result.totalUsage.totalTokens
+    });
 
-        conversationHistory.push({ role: "user", parts: toolResults });
-
-        const nextStop = genLog.time("gemini_call", { iteration });
-        aiResponse = await ai.models.generateContent({
-            model,
-            config: { systemInstruction, tools: componentTools },
-            contents: conversationHistory
-        });
-        nextStop({ has_function_calls: Boolean(aiResponse.functionCalls?.length) });
-        iteration += 1;
-    }
-
-    const finalText = aiResponse.text?.trim();
+    const finalText = result.text?.trim();
     if (!finalText) {
-        genLog.error("empty_final_text", { iterations: iteration, toolCallCount });
+        genLog.error("empty_final_text", { steps: result.steps.length, toolCallCount });
         throw new Error(`Model returned an empty response while generating component '${input.id}'.`);
     }
 
     genLog.info("generation_complete", {
-        iterations: iteration,
+        iterations: result.steps.length,
         tool_calls_total: toolCallCount,
         final_chars: finalText.length
     });
@@ -396,8 +389,8 @@ function parseGeneratedPayload(rawText: string): GeneratedComponentPayload {
     if (jsonCandidate) {
         try {
             const parsed = JSON.parse(jsonCandidate) as Partial<GeneratedComponentPayload>;
-            const shortDeck = typeof parsed.shortDeck === "string" && parsed.shortDeck.trim()
-                ? parsed.shortDeck.trim()
+            const shortDesc = typeof parsed.shortDesc === "string" && parsed.shortDesc.trim()
+                ? parsed.shortDesc.trim()
                 : "Generated reusable component";
 
             const dependencies = Array.isArray(parsed.dependencies)
@@ -412,7 +405,7 @@ function parseGeneratedPayload(rawText: string): GeneratedComponentPayload {
                 throw new Error("Parsed payload did not include code.");
             }
 
-            return { shortDeck, dependencies, code };
+            return { shortDesc, dependencies, code };
         } catch {
             // Fallback to direct text parsing below.
         }
@@ -424,7 +417,7 @@ function parseGeneratedPayload(rawText: string): GeneratedComponentPayload {
     }
 
     return {
-        shortDeck: "Generated reusable component",
+        shortDesc: "Generated reusable component",
         dependencies: [],
         code: extractedCode.trim()
     };

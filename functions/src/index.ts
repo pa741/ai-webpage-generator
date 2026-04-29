@@ -6,17 +6,19 @@
  *
  * See a full list of supported triggers at https://firebase.google.com/docs/functions
  */
-// gemini api key -> AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0
-
 import { onCall, onRequest, Request } from "firebase-functions/https";
+import { streamText } from "ai";
 import { GoogleGenAI, FunctionDeclaration, Type, Content } from "@google/genai";
 import { getRemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
 import { initializeApp } from "firebase-admin/app";
 import { GetHdri, GetModel } from "./asset-manager";
 import { mcpHandler } from "./mcp";
 import { generateRequestId, logger, withRequestContext } from "./logger";
+import { resolveLanguageModel, resolveProviderName } from "./ai-model-provider";
 
-const ai = new GoogleGenAI({ apiKey: "AIzaSyBhxmOBFzUkmyFG2eeyyULG2t2IQ_oP3Z0" });
+const ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY
+});
 
 // 3abc7eff92ea4a8eb4d2e4af396e1aa9 -> poly.pizza
 const app = initializeApp();
@@ -37,7 +39,8 @@ async function GetConfig(headers: Request): Promise<ServerConfig> {
 }
 
 export const mcp = onRequest({
-    region: "europe-southwest1"
+    region: "europe-southwest1",
+    timeoutSeconds: 3600
 }, async (request, response) => {
     await mcpHandler(request, response);
 });
@@ -57,23 +60,34 @@ export const generateContent = onCall({
         const config = await GetConfig(request.rawRequest);
         const prompt = config.getString("content_writter_prompt");
         const model = config.getString("content_writter_model");
-        log.info("generateContent.params", { model, description_chars: description.length });
-
-        const aiResponse = await ai.models.generateContentStream({
+        log.info("generateContent.params", {
             model,
-            config: { systemInstruction: prompt },
-            contents: description
+            provider: resolveProviderName(model),
+            description_chars: description.length
         });
-        const fullResponse: (string | undefined)[] = [];
 
-        for await (const chunk of aiResponse) {
+        const aiResponse = streamText({
+            model: resolveLanguageModel(model),
+            system: prompt,
+            prompt: description
+        });
+        const fullResponse: string[] = [];
+
+        for await (const textPart of aiResponse.textStream) {
             if (request.acceptsStreaming) {
-                response?.sendChunk({ content: chunk.text });
+                response?.sendChunk({ content: textPart });
             }
-            fullResponse.push(chunk.text);
+            fullResponse.push(textPart);
         }
 
-        stop({ ok: true, chunks: fullResponse.length, total_chars: fullResponse.join("").length });
+        const usage = await aiResponse.totalUsage;
+
+        stop({
+            ok: true,
+            chunks: fullResponse.length,
+            total_chars: fullResponse.join("").length,
+            total_tokens: usage.totalTokens
+        });
         return fullResponse;
     });
 });

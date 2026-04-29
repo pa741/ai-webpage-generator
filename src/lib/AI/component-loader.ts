@@ -10,7 +10,7 @@ const SIGNED_URL_TTL_MS = 60 * 60 * 1000;
 export interface ComponentScriptRef {
     id: string;
     src: string;
-    shortDeck: string;
+    shortDesc: string;
 }
 
 export async function resolveComponentScripts(ids: string[]): Promise<ComponentScriptRef[]> {
@@ -32,7 +32,7 @@ export async function resolveComponentScripts(ids: string[]): Promise<ComponentS
             missing.push(doc.id);
             return undefined;
         }
-        const data = doc.data() as { gsPath?: unknown; shortDeck?: unknown };
+        const data = doc.data() as { gsPath?: unknown; shortDesc?: unknown };
         const gsPath = typeof data.gsPath === 'string' ? data.gsPath : '';
         if (!gsPath) {
             noPath.push(doc.id);
@@ -45,13 +45,14 @@ export async function resolveComponentScripts(ids: string[]): Promise<ComponentS
         return {
             id: doc.id,
             src,
-            shortDeck: typeof data.shortDeck === 'string' ? data.shortDeck : ''
+            shortDesc: typeof data.shortDesc === 'string' ? data.shortDesc : ''
         } as ComponentScriptRef;
     }));
 
     const resolved = refs.filter((item): item is ComponentScriptRef => Boolean(item));
     stop({
         resolved_count: resolved.length,
+        resolved_scripts: resolved.map((r) => ({ id: r.id, src: r.src })),
         missing,
         without_gs_path: noPath
     });

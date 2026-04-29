@@ -11,16 +11,14 @@ import {
     UpdateComponent
 } from "./component-manager";
 import {
-    AddFavoriteWord,
-    GetFavoriteWords,
+    //AddFavoriteWord,
+    //GetFavoriteWords,
     GetRandomWord,
     GetWord,
     GetWordOfTheDay,
     SearchWords,
-    WORD_OF_DAY_PROVIDERS
 } from "./word-manager";
 import { generateRequestId, logger, withRequestContext } from "./logger";
-
 interface AuthContext {
     userId: string | null;
     authError: string | null;
@@ -78,7 +76,7 @@ const registerTools = (mcp: McpServer, authContext: AuthContext) => {
     mcp.registerTool("GetWord", {
         description: "Returns metadata for one exact dictionary word match.",
         inputSchema: {
-            word: z.string().min(1)
+            word: z.string()
         }
     }, instrument("GetWord", async ({ word }) => GetWord(word)));
 
@@ -103,33 +101,33 @@ const registerTools = (mcp: McpServer, authContext: AuthContext) => {
         return GetRandomWord(minLength, maxLength);
     }));
 
-    mcp.registerTool("GetWordOfTheDay", {
-        description: "Returns the word of the day from the selected provider.",
+    mcp.registerTool("WordOfTheDay", {
+        description: "Returns the word of the day.",
         inputSchema: {
-            provider: z.enum(WORD_OF_DAY_PROVIDERS).optional(),
+            
             date: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/).optional()
         }
-    }, instrument("GetWordOfTheDay", async ({ provider, date }) => GetWordOfTheDay(provider, date)));
+    }, instrument("WordOfTheDay", async ({  date }) => GetWordOfTheDay( date)));
 
-    mcp.registerTool("AddFavoriteWord", {
-        description: "Adds a word to the authenticated user's favorites.",
-        inputSchema: {
-            word: z.string().min(1)
-        }
-    }, instrument("AddFavoriteWord", async ({ word }) => {
-        const userId = requireUserId(authContext);
-        return AddFavoriteWord(userId, word);
-    }));
+    // mcp.registerTool("AddFavoriteWord", {
+    //     description: "Adds a word to the authenticated user's favorites.",
+    //     inputSchema: {
+    //         word: z.string().min(1)
+    //     }
+    // }, instrument("AddFavoriteWord", async ({ word }) => {
+    //     const userId = requireUserId(authContext);
+    //     return AddFavoriteWord(userId, word);
+    // }));
 
-    mcp.registerTool("GetFavoriteWords", {
-        description: "Lists the authenticated user's favorited words.",
-        inputSchema: {
-            limit: z.number().int().min(1).max(100).optional()
-        }
-    }, instrument("GetFavoriteWords", async ({ limit }) => {
-        const userId = requireUserId(authContext);
-        return GetFavoriteWords(userId, limit);
-    }));
+    // mcp.registerTool("GetFavoriteWords", {
+    //     description: "Lists the authenticated user's favorited words.",
+    //     inputSchema: {
+    //         limit: z.number().int().min(1).max(100).optional()
+    //     }
+    // }, instrument("GetFavoriteWords", async ({ limit }) => {
+    //     const userId = requireUserId(authContext);
+    //     return GetFavoriteWords(userId, limit);
+    // }));
 };
 
 function toToolContent(payload: unknown) {
@@ -143,15 +141,24 @@ function toToolContent(payload: unknown) {
     };
 }
 
-function requireUserId(authContext: AuthContext): string {
-    if (authContext.userId) {
-        return authContext.userId;
-    }
-    log.warn("auth_required_but_missing", { reason: authContext.authError });
-    throw new Error(authContext.authError ?? "Unauthorized. Provide a Firebase ID token in Authorization: Bearer <token>.");
-}
+// function requireUserId(authContext: AuthContext): string {
+//     if (authContext.userId) {
+//         return authContext.userId;
+//     }
+//     log.warn("auth_required_but_missing", { reason: authContext.authError });
+//     throw new Error(authContext.authError ?? "Unauthorized. Provide a Firebase ID token in Authorization: Bearer <token>.");
+// }
 
 async function resolveAuthContext(request: IncomingMessage): Promise<AuthContext> {
+    //debug userid
+    if (process.env.FUNCTIONS_EMULATOR == "true" == true) {
+        return {
+            userId: "emulator-user",
+            authError: null
+        };
+
+
+    }
     const bearerToken = extractBearerToken(request.headers.authorization);
     if (!bearerToken) {
         return {

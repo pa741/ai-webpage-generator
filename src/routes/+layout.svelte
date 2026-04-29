@@ -24,13 +24,7 @@
   });
 </script>
 
-<svelte:head>
-  {#if page.data?.componentScripts}
-    {#each page.data.componentScripts as scriptRef (scriptRef.id)}
-      <script src={scriptRef.src} defer></script>
-    {/each}
-  {/if}
-</svelte:head>
+
 
 <div class="app">
   {#if token}

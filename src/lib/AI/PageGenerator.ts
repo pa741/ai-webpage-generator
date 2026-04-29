@@ -1,5 +1,6 @@
 import { trackAIInteraction, trackError, trackWebsiteGeneration } from '$lib/analytics';
 import Cerebras from '@cerebras/cerebras_cloud_sdk';
+import { generateText } from 'ai';
 import { Runware } from '@runware/sdk-js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -16,6 +17,7 @@ import htmlGeneratorPrompt from '../../../prompts/html_generator.json';
 import actionRunnerPrompt from '../../../prompts/action_runner.json';
 import imageDescriptionPrompt from '../../../prompts/image_description.json';
 import imageGenerationConfig from '../../../prompts/image_generation.json';
+import { resolveLanguageModel, resolveProviderName } from './model-provider';
 
 const log = logger.child('PageGenerator');
 
@@ -23,7 +25,7 @@ const client = new Cerebras({ apiKey: CEREBRAS_API_KEY });
 const runware = new Runware({ apiKey: RUNWARE_API_KEY });
 
 const MCP_REGION = 'europe-southwest1';
-const MAX_TOOL_LOOP_ITERATIONS = 8;
+const MAX_TOOL_LOOP_ITERATIONS = 10;
 
 const READ_ONLY_DICTIONARY_TOOLS = new Set([
     'GetWord',
@@ -210,16 +212,16 @@ async function runMcpToolLoop(input: {
                     messages: messages as any,
                     model: input.model,
                     tools: tools as any,
-                    tool_choice: 'auto',
-                    ...(input.responseFormat === 'json_object'
-                        ? { response_format: { type: 'json_object' } }
-                        : {})
+                    tool_choice: 'auto'
+                    
                 });
+                loopLog.info( JSON.stringify( completion ));
             } catch (error) {
                 llmStop({ ok: false, error });
                 loopLog.error('llm_call_failed', { iteration, error });
                 return result;
             }
+            
 
             const usage = completion?.usage ?? {};
             llmStop({
@@ -256,7 +258,7 @@ async function runMcpToolLoop(input: {
                     const toolStop = loopLog.time('tool_call', {
                         tool: name,
                         iteration,
-                        arg_keys: Object.keys(args)
+                        args: JSON.stringify(args)
                     });
 
                     let toolResultText: string;
@@ -414,6 +416,7 @@ export async function RequestHtml(_request: Request, pageSpec: PageSpec, usedCom
     const renderLog = log.child('render');
     const stop = renderLog.time('render', {
         model: htmlGeneratorPrompt.model,
+        provider: resolveProviderName(htmlGeneratorPrompt.model),
         component_count: usedComponentIds.length
     });
     trackAIInteraction('website_generation_request', htmlGeneratorPrompt.model);
@@ -422,38 +425,35 @@ export async function RequestHtml(_request: Request, pageSpec: PageSpec, usedCom
         pageSpec,
         availableComponents: usedComponentIds
     });
-
+    renderLog.info('render_input', { prompt_chars: userPrompt, pageSpec: JSON.stringify(pageSpec) });
     try {
-        const response: any = await client.chat.completions.create({
-            messages: [
-                { role: 'system', content: htmlGeneratorPrompt.prompt },
-                { role: 'user', content: userPrompt }
-            ],
-            model: htmlGeneratorPrompt.model
+        const result = await generateText({
+            model: resolveLanguageModel(htmlGeneratorPrompt.model),
+            system: htmlGeneratorPrompt.prompt,
+            prompt: userPrompt
         });
 
-        const content = response?.choices?.[0]?.message?.content;
-        const usage = response?.usage ?? {};
-        if (typeof content !== 'string' || !content.trim()) {
+        if (typeof result.text !== 'string' || !result.text.trim()) {
             trackWebsiteGeneration(JSON.stringify(pageSpec), false);
-            stop({ ok: false, reason: 'empty_content', ...usage });
+            stop({ ok: false, reason: 'empty_content' });
             return '<!-- Error generating HTML: No content returned -->';
         }
 
-        const cleaned = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+        const cleaned = result.text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
         trackWebsiteGeneration(JSON.stringify(pageSpec), true);
         stop({
             ok: true,
             html_chars: cleaned.length,
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens
+            input_tokens: result.usage.inputTokens,
+            output_tokens: result.usage.outputTokens,
+            total_tokens: result.totalUsage.totalTokens
         });
         return cleaned;
     } catch (error) {
         trackWebsiteGeneration(JSON.stringify(pageSpec), false);
         stop({ ok: false, error });
         renderLog.error('render_failed', { error });
-        return '<!-- Error generating HTML -->';
+        return '<!-- Error generating HTML ' + (error instanceof Error ? error.message : error) + ' -->';
     }
 }
 
@@ -466,6 +466,12 @@ export interface GeneratedPage {
 
 export async function GenerateHtml(request: Request, route: string, _referer?: string | null): Promise<GeneratedPage> {
     const designed = await DesignPage(request, route);
+    log.info('page_designed', {
+        route,
+        prompt_chars: designed.rawDesignerOutput,
+        page_spec: JSON.stringify(designed.pageSpec),
+        used_component_ids: designed.usedComponentIds
+    });
     const html = await RequestHtml(request, designed.pageSpec, designed.usedComponentIds);
     return {
         prompt: designed.rawDesignerOutput,
@@ -480,20 +486,28 @@ export async function GenerateHomePage(request: Request): Promise<GeneratedPage>
 }
 
 async function GetImageDescriptionFromRoute(route: string): Promise<string> {
-    const stop = log.child('image').time('describe', { route, model: imageDescriptionPrompt.model });
+    const stop = log.child('image').time('describe', {
+        route,
+        model: imageDescriptionPrompt.model,
+        provider: resolveProviderName(imageDescriptionPrompt.model)
+    });
     trackAIInteraction('image_description_generation_request', imageDescriptionPrompt.model);
 
     try {
-        const response: any = await client.chat.completions.create({
-            messages: [
-                { role: 'system', content: imageDescriptionPrompt.prompt },
-                { role: 'user', content: route }
-            ],
-            model: imageDescriptionPrompt.model
+        const result = await generateText({
+            model: resolveLanguageModel(imageDescriptionPrompt.model),
+            system: imageDescriptionPrompt.prompt,
+            prompt: route
         });
-        const description = response?.choices?.[0]?.message?.content ?? '';
-        const usage = response?.usage ?? {};
-        stop({ ok: true, description_chars: description.length, ...usage });
+
+        const description = result.text ?? '';
+        stop({
+            ok: true,
+            description_chars: description.length,
+            input_tokens: result.usage.inputTokens,
+            output_tokens: result.usage.outputTokens,
+            total_tokens: result.totalUsage.totalTokens
+        });
         return description;
     } catch (error) {
         stop({ ok: false, error });
@@ -565,9 +579,9 @@ export async function HandleAction(request: Request): Promise<Response> {
         actionLog.warn('body_not_json', { body_chars: bodyText.length, error });
     }
 
-    const outputFormat = typeof bodyJson.outputFormat === 'string'
-        ? bodyJson.outputFormat
-        : '{ "ok": boolean, "message": string, "data": any }';
+    const outputFormat = typeof bodyJson.outputFormat// === 'string'
+    //    ? bodyJson.outputFormat
+    //    : '{ "success": boolean, "message": string, "data": any }';
 
     trackAIInteraction('action_runner_request', actionRunnerPrompt.model);
     actionLog.info('action_received', {

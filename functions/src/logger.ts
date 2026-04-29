@@ -1,4 +1,4 @@
-import { logger as fnLogger } from "firebase-functions/v2";
+import { info, debug, error,  warn } from "firebase-functions/logger";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -35,10 +35,10 @@ function emit(level: LogLevel, scope: string, msg: string, fields: LogFields | u
         payload.error = { name: err.name, message: err.message, stack: err.stack };
     }
 
-    if (level === "error") fnLogger.error(msg, payload);
-    else if (level === "warn") fnLogger.warn(msg, payload);
-    else if (level === "debug") fnLogger.debug(msg, payload);
-    else fnLogger.info(msg, payload);
+    if (level === "error") error(msg, payload);
+    else if (level === "warn") warn(msg, payload);
+    else if (level === "debug") debug(msg, payload);
+    else info(msg, payload);
 }
 
 export class Logger {
