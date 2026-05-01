@@ -8,11 +8,25 @@ import { env } from '$env/dynamic/private';
 import { PUBLIC_FIREBASE_PROJECT_ID } from '$env/static/public';
 import { logger } from '$lib/logger';
 
-import pageDesignerPrompt from '../../../prompts/page_designer.json';
-import htmlGeneratorPrompt from '../../../prompts/html_generator.json';
-import actionRunnerPrompt from '../../../prompts/action_runner.json';
-import imageDescriptionPrompt from '../../../prompts/image_description.json';
-import imageGenerationConfig from '../../../prompts/image_generation.json';
+import pageDesignerPrompt from '../../../prompts/page_designer.md?raw';
+import htmlGeneratorPrompt from '../../../prompts/html_generator.md?raw';
+import actionRunnerPrompt from '../../../prompts/action_runner.md?raw';
+import imageDescriptionPrompt from '../../../prompts/image_description.md?raw';
+import imageGenerationNegativePrompt from '../../../prompts/image_generation.md?raw';
+
+function requireEnv(name: string): string {
+    const value = env[name];
+    if (!value || !value.trim()) {
+        throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value.trim();
+}
+
+const PAGE_DESIGNER_MODEL = () => requireEnv('PAGE_DESIGNER_MODEL');
+const HTML_GENERATOR_MODEL = () => requireEnv('HTML_GENERATOR_MODEL');
+const ACTION_RUNNER_MODEL = () => requireEnv('ACTION_RUNNER_MODEL');
+const IMAGE_DESCRIPTION_MODEL = () => requireEnv('IMAGE_DESCRIPTION_MODEL');
+const IMAGE_GENERATION_MODEL = () => requireEnv('IMAGE_GENERATION_MODEL');
 import { resolveLanguageModel, resolveProviderName } from './model-provider';
 import { loadUserPreferences, formatPreferencesForPrompt, type UserPreference } from './user-preferences';
 
@@ -254,8 +268,9 @@ export interface DesignedPage {
 }
 
 export async function DesignPage(request: Request, route: string, idToken?: string, userId?: string): Promise<DesignedPage> {
-    const stop = log.child('design').time('design', { route, model: pageDesignerPrompt.model, authenticated: Boolean(idToken) });
-    trackAIInteraction('page_designer_request', pageDesignerPrompt.model);
+    const pageDesignerModel = PAGE_DESIGNER_MODEL();
+    const stop = log.child('design').time('design', { route, model: pageDesignerModel, authenticated: Boolean(idToken) });
+    trackAIInteraction('page_designer_request', pageDesignerModel);
 
     const allowTool = (d: McpToolDescriptor) =>
         COMPONENT_TOOLS.has(d.name) || d.annotations?.readOnlyHint === true;
@@ -268,8 +283,8 @@ export async function DesignPage(request: Request, route: string, idToken?: stri
 
     const { finalText, toolInvocations } = await runMcpToolLoop({
         request,
-        model: pageDesignerPrompt.model,
-        systemPrompt: pageDesignerPrompt.prompt,
+        model: pageDesignerModel,
+        systemPrompt: pageDesignerPrompt,
         userPrompt: JSON.stringify(userPromptObj),
         allowTool,
         scope: 'designer',
@@ -364,12 +379,13 @@ function collectComponentIds(
 
 export async function RequestHtml(_request: Request, pageSpec: PageSpec, usedComponentIds: string[]): Promise<string> {
     const renderLog = log.child('render');
+    const htmlGeneratorModel = HTML_GENERATOR_MODEL();
     const stop = renderLog.time('render', {
-        model: htmlGeneratorPrompt.model,
-        provider: resolveProviderName(htmlGeneratorPrompt.model),
+        model: htmlGeneratorModel,
+        provider: resolveProviderName(htmlGeneratorModel),
         component_count: usedComponentIds.length
     });
-    trackAIInteraction('website_generation_request', htmlGeneratorPrompt.model);
+    trackAIInteraction('website_generation_request', htmlGeneratorModel);
 
     const userPrompt = JSON.stringify({
         pageSpec,
@@ -378,8 +394,8 @@ export async function RequestHtml(_request: Request, pageSpec: PageSpec, usedCom
     renderLog.info('render_input', { prompt_chars: userPrompt, pageSpec: JSON.stringify(pageSpec) });
     try {
         const result = await generateText({
-            model: resolveLanguageModel(htmlGeneratorPrompt.model),
-            system: htmlGeneratorPrompt.prompt,
+            model: resolveLanguageModel(htmlGeneratorModel),
+            system: htmlGeneratorPrompt,
             prompt: userPrompt
         });
 
@@ -436,17 +452,18 @@ export async function GenerateHomePage(request: Request, idToken?: string, userI
 }
 
 async function GetImageDescriptionFromRoute(route: string): Promise<string> {
+    const imageDescriptionModel = IMAGE_DESCRIPTION_MODEL();
     const stop = log.child('image').time('describe', {
         route,
-        model: imageDescriptionPrompt.model,
-        provider: resolveProviderName(imageDescriptionPrompt.model)
+        model: imageDescriptionModel,
+        provider: resolveProviderName(imageDescriptionModel)
     });
-    trackAIInteraction('image_description_generation_request', imageDescriptionPrompt.model);
+    trackAIInteraction('image_description_generation_request', imageDescriptionModel);
 
     try {
         const result = await generateText({
-            model: resolveLanguageModel(imageDescriptionPrompt.model),
-            system: imageDescriptionPrompt.prompt,
+            model: resolveLanguageModel(imageDescriptionModel),
+            system: imageDescriptionPrompt,
             prompt: route
         });
 
@@ -467,7 +484,8 @@ async function GetImageDescriptionFromRoute(route: string): Promise<string> {
 }
 
 export async function GenerateImageFromRoute(_request: Request, route: string): Promise<string> {
-    const imgLog = log.child('image', { route, model: imageGenerationConfig.model });
+    const imageGenerationModel = IMAGE_GENERATION_MODEL();
+    const imgLog = log.child('image', { route, model: imageGenerationModel });
     const stop = imgLog.time('generate');
 
     await runware.ensureConnection();
@@ -480,9 +498,9 @@ export async function GenerateImageFromRoute(_request: Request, route: string): 
 
     try {
         const response = await runware.requestImages({
-            model: imageGenerationConfig.model,
+            model: imageGenerationModel,
             positivePrompt: description,
-            negativePrompt: imageGenerationConfig.negativePrompt,
+            negativePrompt: imageGenerationNegativePrompt,
             numberResults: 1,
             CFGScale: 1,
             steps: 1,
@@ -497,7 +515,7 @@ export async function GenerateImageFromRoute(_request: Request, route: string): 
             stop({ ok: false, reason: 'empty_response' });
             return '';
         }
-        trackAIInteraction('image_generation_request', imageGenerationConfig.model);
+        trackAIInteraction('image_generation_request', imageGenerationModel);
         stop({ ok: true, base64_chars: response[0].imageBase64Data.length });
         return response[0].imageBase64Data;
     } catch (error) {
@@ -534,7 +552,8 @@ export async function HandleAction(request: Request, idToken?: string, userId?: 
     //    : '{ "success": boolean, "message": string, "data": any }';
 
     const authenticated = Boolean(idToken || request.headers.get('authorization'));
-    trackAIInteraction('action_runner_request', actionRunnerPrompt.model);
+    const actionRunnerModel = ACTION_RUNNER_MODEL();
+    trackAIInteraction('action_runner_request', actionRunnerModel);
     actionLog.info('action_received', {
         body_keys: Object.keys(bodyJson),
         output_format: outputFormat,
@@ -559,8 +578,8 @@ export async function HandleAction(request: Request, idToken?: string, userId?: 
 
     const { finalText, toolInvocations } = await runMcpToolLoop({
         request,
-        model: actionRunnerPrompt.model,
-        systemPrompt: actionRunnerPrompt.prompt,
+        model: actionRunnerModel,
+        systemPrompt: actionRunnerPrompt,
         userPrompt,
         allowTool,
         scope: 'action',

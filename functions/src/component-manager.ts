@@ -5,9 +5,11 @@ import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { logger } from "./logger";
 import { resolveLanguageModel, resolveProviderName } from "./ai-model-provider";
-import componentDesignerPrompt from "../prompts/component_designer.json";
-import componentCodegenPrompt from "../prompts/component_codegen.json";
-import componentEvaluatorPrompt from "../prompts/component_evaluator.json";
+import { loadPrompt, requireEnv } from "./prompt-loader";
+
+const componentDesignerPrompt = loadPrompt("component_designer");
+const componentCodegenPrompt = loadPrompt("component_codegen");
+const componentEvaluatorPrompt = loadPrompt("component_evaluator");
 import { GetUserPreferences, formatPreferencesForPrompt } from "./user-manager";
 import { z } from "zod";
 
@@ -631,8 +633,8 @@ async function designComponent(input: {
 
     const userMessage = messageParts.join("\n\n");
 
-    const systemInstruction = componentDesignerPrompt.prompt;
-    const model = componentDesignerPrompt.model;
+    const systemInstruction = componentDesignerPrompt;
+    const model = requireEnv("COMPONENT_DESIGNER_MODEL");
 
     const designLog = log.child("design", {
         id: input.id,
@@ -785,7 +787,7 @@ async function generateComponentCodeFromSpec(input: {
 
     const userMessage = messageParts.join("\n\n");
 
-    const model = componentCodegenPrompt.model;
+    const model = requireEnv("COMPONENT_CODEGEN_MODEL");
     const codegenLog = log.child("codegen", {
         id: input.id,
         mode: input.mode,
@@ -796,7 +798,7 @@ async function generateComponentCodeFromSpec(input: {
     const llmStop = codegenLog.time("llm_call");
     const result = await generateText({
         model: resolveLanguageModel(model),
-        system: componentCodegenPrompt.prompt,
+        system: componentCodegenPrompt,
         prompt: userMessage
     });
     llmStop({
@@ -852,7 +854,7 @@ async function evaluateComponentCode(input: { id: string; spec: ComponentSpec; c
         "Evaluate the source against every rule in the system prompt. Return JSON only."
     ].join("\n\n");
 
-    const model = componentEvaluatorPrompt.model;
+    const model = requireEnv("COMPONENT_EVALUATOR_MODEL");
     const evalLog = log.child("evaluator", {
         id: input.id,
         model,
@@ -864,7 +866,7 @@ async function evaluateComponentCode(input: { id: string; spec: ComponentSpec; c
     try {
         result = await generateText({
             model: resolveLanguageModel(model),
-            system: componentEvaluatorPrompt.prompt,
+            system: componentEvaluatorPrompt,
             prompt: userMessage
         });
     } catch (error) {

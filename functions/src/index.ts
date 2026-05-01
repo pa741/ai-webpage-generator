@@ -26,9 +26,11 @@ import {
 } from "./component-manager";
 import { SaveUserPreference, GetUserPreferences, formatPreferencesForPrompt } from "./user-manager";
 import { activeToolkit } from "./toolkits/active";
-import feedbackEvaluatorPrompt from "../prompts/feedback_evaluator.json";
-import componentInitializerPrompt from "../prompts/component_initializer.json";
-import componentCuratorPrompt from "../prompts/component_curator.json";
+import { loadPrompt, requireEnv } from "./prompt-loader";
+
+const feedbackEvaluatorPrompt = loadPrompt("feedback_evaluator");
+const componentInitializerPrompt = loadPrompt("component_initializer");
+const componentCuratorPrompt = loadPrompt("component_curator");
 
 // 3abc7eff92ea4a8eb4d2e4af396e1aa9 -> poly.pizza
 const app = initializeApp();
@@ -312,8 +314,8 @@ export const evaluateFeedback = onCall({
         let result;
         try {
             result = await generateText({
-                model: resolveLanguageModel(feedbackEvaluatorPrompt.model),
-                system: feedbackEvaluatorPrompt.prompt,
+                model: resolveLanguageModel(requireEnv("FEEDBACK_EVALUATOR_MODEL")),
+                system: feedbackEvaluatorPrompt,
                 prompt: userMessage,
                 tools: tools as Parameters<typeof generateText>[0]["tools"],
                 stopWhen: stepCountIs(MAX_FEEDBACK_TOOL_STEPS),
@@ -536,8 +538,8 @@ export const initializeComponents = onCall({
         let result;
         try {
             result = await generateText({
-                model: resolveLanguageModel(componentInitializerPrompt.model),
-                system: componentInitializerPrompt.prompt,
+                model: resolveLanguageModel(requireEnv("COMPONENT_INITIALIZER_MODEL")),
+                system: componentInitializerPrompt,
                 prompt: userMessage,
                 tools: tools as Parameters<typeof generateText>[0]["tools"],
                 stopWhen: stepCountIs(MAX_INIT_TOOL_STEPS),
@@ -649,8 +651,8 @@ export const updateComponents = onCall({
         let result;
         try {
             result = await generateText({
-                model: resolveLanguageModel(componentCuratorPrompt.model),
-                system: componentCuratorPrompt.prompt,
+                model: resolveLanguageModel(requireEnv("COMPONENT_CURATOR_MODEL")),
+                system: componentCuratorPrompt,
                 prompt: userMessage,
                 tools: tools as Parameters<typeof generateText>[0]["tools"],
                 stopWhen: stepCountIs(MAX_UPDATE_TOOL_STEPS),
