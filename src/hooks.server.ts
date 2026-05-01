@@ -153,7 +153,7 @@ export const handle: Handle = async ({ event, resolve }) => {
                 );
                 const isSessionAuth = pathname === SESSION_AUTH_PATH;
                 if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && !isAppCheckPost && !isSessionAuth) {
-                    const response = await HandleAction(event.request, auth.idToken);
+                    const response = await HandleAction(event.request, auth.idToken, auth.userId);
                     stop({ status: response.status, kind: 'action', method });
                     return response;
                 }

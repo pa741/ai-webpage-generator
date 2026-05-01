@@ -10,6 +10,7 @@
   import TextContent from "../Components/TextContent.svelte";
   import GoogleLogin from "../Components/GoogleLogin.svelte";
   import ThreeCanvas from "../Components/ThreeCanvas.svelte";
+  import FeedbackFAB from "../Components/FeedbackFAB.svelte";
   let token = data.token;
   import "@twind/with-web-components";
 
@@ -34,6 +35,7 @@
 <div class="app">
   {#if token}
     {@render children()}
+    <feedback-fab></feedback-fab>
   {:else}
     <main>
       <div class="p-4 w-full max-w-2xl mx-auto">

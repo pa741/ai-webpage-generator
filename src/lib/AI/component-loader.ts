@@ -21,7 +21,18 @@ export interface ComponentScriptRef {
     src: string;
     shortDesc: string;
 }
-
+async function getDependenciesOfComponent(id: string): Promise<string[]> {
+    const db = getFirestore();
+    const doc = await db.collection(COMPONENTS_COLLECTION).doc(id).get();
+    if (!doc.exists) {
+        return [];
+    }
+    const data = doc.data();
+    if (!data || !Array.isArray(data.dependencies)) {
+        return [];
+    }
+    return data.dependencies.filter((d): d is string => typeof d === 'string' && d.trim().length > 0);
+}
 export async function resolveComponentScripts(
     ids: string[],
     userId?: string | null
@@ -36,8 +47,15 @@ export async function resolveComponentScripts(
 
     const externalIds = uniqueIds.filter((id) => !BUILT_IN_COMPONENT_IDS.has(id));
     const builtIns = uniqueIds.filter((id) => BUILT_IN_COMPONENT_IDS.has(id));
+    let allIdsToResolve = new Set(externalIds);
+    for (const id of externalIds) {
+        const deps = await getDependenciesOfComponent(id);
+        deps.forEach((dep) => allIdsToResolve.add(dep));
+    }
+    let allIdsArray = Array.from(allIdsToResolve);
+    
 
-    const docPairs = await Promise.all(externalIds.map(async (id) => {
+    const docPairs = await Promise.all(allIdsArray.map(async (id) => {
         const [defaultDoc, userDoc] = await Promise.all([
             db.collection(COMPONENTS_COLLECTION).doc(id).get(),
             userId

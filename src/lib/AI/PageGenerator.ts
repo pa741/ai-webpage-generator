@@ -1,13 +1,9 @@
 import { trackAIInteraction, trackError, trackWebsiteGeneration } from '$lib/analytics';
-import Cerebras from '@cerebras/cerebras_cloud_sdk';
-import { generateText } from 'ai';
+import { generateText, jsonSchema, stepCountIs, tool } from 'ai';
 import { Runware } from '@runware/sdk-js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {
-    CEREBRAS_API_KEY,
-    RUNWARE_API_KEY
-} from '$env/static/private';
+import { RUNWARE_API_KEY } from '$env/static/private';
 import { env } from '$env/dynamic/private';
 import { PUBLIC_FIREBASE_PROJECT_ID } from '$env/static/public';
 import { logger } from '$lib/logger';
@@ -18,22 +14,14 @@ import actionRunnerPrompt from '../../../prompts/action_runner.json';
 import imageDescriptionPrompt from '../../../prompts/image_description.json';
 import imageGenerationConfig from '../../../prompts/image_generation.json';
 import { resolveLanguageModel, resolveProviderName } from './model-provider';
+import { loadUserPreferences, formatPreferencesForPrompt, type UserPreference } from './user-preferences';
 
 const log = logger.child('PageGenerator');
 
-const client = new Cerebras({ apiKey: CEREBRAS_API_KEY });
 const runware = new Runware({ apiKey: RUNWARE_API_KEY });
 
 const MCP_REGION = 'europe-southwest1';
 const MAX_TOOL_LOOP_ITERATIONS = 10;
-
-const READ_ONLY_DICTIONARY_TOOLS = new Set([
-    'GetWord',
-    'SearchWords',
-    'GetRandomWord',
-    'GetWordOfTheDay',
-    'GetFavoriteWords'
-]);
 
 const COMPONENT_TOOLS = new Set([
     'GetAllComponents',
@@ -41,27 +29,6 @@ const COMPONENT_TOOLS = new Set([
     'CreateComponent',
     'UpdateComponent'
 ]);
-
-interface CerebrasTool {
-    type: 'function';
-    function: {
-        name: string;
-        description?: string;
-        parameters: Record<string, unknown>;
-    };
-}
-
-interface CerebrasMessage {
-    role: 'system' | 'user' | 'assistant' | 'tool';
-    content: string | null;
-    name?: string;
-    tool_call_id?: string;
-    tool_calls?: Array<{
-        id: string;
-        type: 'function';
-        function: { name: string; arguments: string };
-    }>;
-}
 
 interface PageSection {
     component?: string;
@@ -162,26 +129,16 @@ function parseToolJson(content: unknown): unknown {
     }
 }
 
-async function listMcpToolsAsCerebras(mcp: Client, allow?: (name: string) => boolean): Promise<CerebrasTool[]> {
-    const listed = await mcp.listTools();
-    const tools = (listed?.tools ?? []) as Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
-    return tools
-        .filter((tool) => !allow || allow(tool.name))
-        .map((tool) => ({
-            type: 'function' as const,
-            function: {
-                name: tool.name,
-                description: tool.description,
-                parameters: (tool.inputSchema && typeof tool.inputSchema === 'object')
-                    ? tool.inputSchema
-                    : { type: 'object', properties: {} }
-            }
-        }));
-}
-
 interface ToolLoopResult {
     finalText: string;
     toolInvocations: Array<{ name: string; args: Record<string, unknown>; result: unknown }>;
+}
+
+interface McpToolDescriptor {
+    name: string;
+    description?: string;
+    inputSchema?: Record<string, unknown>;
+    annotations?: { readOnlyHint?: boolean } & Record<string, unknown>;
 }
 
 async function runMcpToolLoop(input: {
@@ -189,8 +146,7 @@ async function runMcpToolLoop(input: {
     model: string;
     systemPrompt: string;
     userPrompt: string;
-    allowTool?: (name: string) => boolean;
-    responseFormat?: 'text' | 'json_object';
+    allowTool?: (descriptor: McpToolDescriptor) => boolean;
     scope: string;
     idToken?: string;
 }): Promise<ToolLoopResult> {
@@ -203,113 +159,89 @@ async function runMcpToolLoop(input: {
 
     const outcome = await withMcpClient(input.request, async (mcp) => {
         const listStop = loopLog.time('list_tools');
-        const tools = await listMcpToolsAsCerebras(mcp, input.allowTool);
-        listStop({ tool_count: tools.length });
+        const listed = await mcp.listTools();
+        const allowed = ((listed?.tools ?? []) as McpToolDescriptor[])
+            .filter((t) => !input.allowTool || input.allowTool(t));
+        listStop({ tool_count: allowed.length });
 
-        const messages: CerebrasMessage[] = [
-            { role: 'system', content: input.systemPrompt },
-            { role: 'user', content: input.userPrompt }
-        ];
+        const domainInstructions = (mcp.getInstructions?.() ?? '').trim();
+        const systemPrompt = domainInstructions
+            ? `${input.systemPrompt}\n\nDomain context:\n${domainInstructions}`
+            : input.systemPrompt;
 
-        for (let iteration = 0; iteration < MAX_TOOL_LOOP_ITERATIONS; iteration += 1) {
-            const llmStop = loopLog.time('llm_call', { iteration, message_count: messages.length });
-            let completion: any;
-            try {
-                completion = await client.chat.completions.create({
-                    messages: messages as any,
-                    model: input.model,
-                    tools: tools as any,
-                    tool_choice: 'auto'
-                    
-                });
-                loopLog.info( JSON.stringify( completion ));
-            } catch (error) {
-                llmStop({ ok: false, error });
-                loopLog.error('llm_call_failed', { iteration, error });
-                return result;
-            }
-            
+        const tools: Record<string, unknown> = {};
+        for (const descriptor of allowed) {
+            const schema = (descriptor.inputSchema && typeof descriptor.inputSchema === 'object')
+                ? descriptor.inputSchema
+                : { type: 'object', properties: {} };
 
-            const usage = completion?.usage ?? {};
-            llmStop({
-                ok: true,
-                prompt_tokens: usage.prompt_tokens,
-                completion_tokens: usage.completion_tokens,
-                total_tokens: usage.total_tokens,
-                finish_reason: completion?.choices?.[0]?.finish_reason
-            });
-
-            const choice = completion?.choices?.[0]?.message;
-            if (!choice) {
-                loopLog.warn('llm_no_choice', { iteration });
-                break;
-            }
-
-            const toolCalls = choice.tool_calls as CerebrasMessage['tool_calls'] | undefined;
-            if (toolCalls && toolCalls.length > 0) {
-                messages.push({
-                    role: 'assistant',
-                    content: choice.content ?? null,
-                    tool_calls: toolCalls
-                });
-
-                for (const call of toolCalls) {
-                    const name = call.function.name;
-                    let args: Record<string, unknown> = {};
-                    try {
-                        args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-                    } catch (error) {
-                        loopLog.warn('tool_args_invalid', { tool: name, raw: call.function.arguments, error });
-                    }
-
+            tools[descriptor.name] = tool({
+                description: descriptor.description ?? '',
+                inputSchema: jsonSchema(schema),
+                execute: async (rawArgs) => {
+                    const args = (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs))
+                        ? rawArgs as Record<string, unknown>
+                        : {};
                     const toolStop = loopLog.time('tool_call', {
-                        tool: name,
-                        iteration,
+                        tool: descriptor.name,
                         args: JSON.stringify(args)
                     });
-
-                    let toolResultText: string;
                     try {
-                        const toolResponse = await mcp.callTool({ name, arguments: args });
-                        const parsed = parseToolJson(toolResponse.content);
-                        result.toolInvocations.push({ name, args, result: parsed });
-                        toolResultText = typeof parsed === 'string'
-                            ? parsed
-                            : JSON.stringify(parsed ?? null);
-                        toolStop({ ok: true, result_chars: toolResultText.length });
+                        const response = await mcp.callTool({ name: descriptor.name, arguments: args });
+                        const parsed = parseToolJson(response.content);
+                        result.toolInvocations.push({ name: descriptor.name, args, result: parsed });
+                        toolStop({
+                            ok: true,
+                            result_chars: typeof parsed === 'string' ? parsed.length : JSON.stringify(parsed ?? null).length
+                        });
+                        return parsed ?? null;
                     } catch (error) {
                         const message = error instanceof Error ? error.message : 'Unknown tool error';
-                        result.toolInvocations.push({ name, args, result: { error: message } });
-                        toolResultText = JSON.stringify({ error: message });
+                        result.toolInvocations.push({ name: descriptor.name, args, result: { error: message } });
                         toolStop({ ok: false, error });
-                        loopLog.warn('tool_call_failed', { tool: name, iteration, error });
+                        loopLog.warn('tool_call_failed', { tool: descriptor.name, error });
+                        return { error: message };
                     }
+                }
+            });
+        }
 
-                    messages.push({
-                        role: 'tool',
-                        tool_call_id: call.id,
-                        name,
-                        content: toolResultText
+        const llmStop = loopLog.time('llm_call');
+        try {
+            const generation = await generateText({
+                model: resolveLanguageModel(input.model),
+                system: systemPrompt,
+                prompt: input.userPrompt,
+                tools: tools as Parameters<typeof generateText>[0]['tools'],
+                stopWhen: stepCountIs(MAX_TOOL_LOOP_ITERATIONS),
+                onStepFinish(step) {
+                    loopLog.debug('step_finished', {
+                        step_number: step.stepNumber,
+                        tool_calls: step.toolCalls.length,
+                        finish_reason: step.finishReason
                     });
                 }
+            });
+            llmStop({
+                ok: true,
+                steps: generation.steps.length,
+                tool_calls_total: result.toolInvocations.length,
+                finish_reason: generation.finishReason,
+                total_tokens: generation.totalUsage.totalTokens
+            });
 
-                continue;
-            }
-
-            result.finalText = typeof choice.content === 'string' ? choice.content : '';
+            result.finalText = generation.text ?? '';
             loopLog.info('loop_complete', {
-                iterations: iteration + 1,
+                iterations: generation.steps.length,
                 tool_calls_total: result.toolInvocations.length,
                 final_chars: result.finalText.length
             });
             return result;
+        } catch (error) {
+            llmStop({ ok: false, error });
+            loopLog.error('llm_call_failed', { error });
+            return result;
         }
-
-        loopLog.warn('loop_max_iterations', {
-            iterations: MAX_TOOL_LOOP_ITERATIONS,
-            tool_calls_total: result.toolInvocations.length
-        });
-        return result;
     }, input.idToken);
 
     return outcome ?? result;
@@ -321,19 +253,25 @@ export interface DesignedPage {
     usedComponentIds: string[];
 }
 
-export async function DesignPage(request: Request, route: string, idToken?: string): Promise<DesignedPage> {
+export async function DesignPage(request: Request, route: string, idToken?: string, userId?: string): Promise<DesignedPage> {
     const stop = log.child('design').time('design', { route, model: pageDesignerPrompt.model, authenticated: Boolean(idToken) });
     trackAIInteraction('page_designer_request', pageDesignerPrompt.model);
 
-    const allowTool = (name: string) => COMPONENT_TOOLS.has(name) || READ_ONLY_DICTIONARY_TOOLS.has(name);
+    const allowTool = (d: McpToolDescriptor) =>
+        COMPONENT_TOOLS.has(d.name) || d.annotations?.readOnlyHint === true;
+
+    const userPreferences = await loadUserPreferences(userId);
+    const userPromptObj: Record<string, unknown> = { route };
+    if (userPreferences.length) {
+        userPromptObj.userPreferences = userPreferences.map((p) => p.text);
+    }
 
     const { finalText, toolInvocations } = await runMcpToolLoop({
         request,
         model: pageDesignerPrompt.model,
         systemPrompt: pageDesignerPrompt.prompt,
-        userPrompt: JSON.stringify({ route }),
+        userPrompt: JSON.stringify(userPromptObj),
         allowTool,
-        responseFormat: 'json_object',
         scope: 'designer',
         idToken
     });
@@ -406,11 +344,15 @@ function collectComponentIds(
 
     for (const invocation of toolInvocations) {
         if (invocation.name === 'CreateComponent' || invocation.name === 'UpdateComponent') {
+            const result = invocation.result as { id?: unknown; rejected?: unknown; gsPath?: unknown } | null;
+            if (result && typeof result === 'object' && (result as any).rejected === true) {
+                continue;
+            }
+
             const id = invocation.args?.id;
             if (typeof id === 'string' && id.trim()) {
                 ids.add(id.trim());
             }
-            const result = invocation.result as { id?: unknown } | null;
             if (result && typeof result === 'object' && typeof (result as any).id === 'string') {
                 ids.add((result as any).id);
             }
@@ -472,8 +414,8 @@ export interface GeneratedPage {
     usedComponentIds: string[];
 }
 
-export async function GenerateHtml(request: Request, route: string, idToken?: string): Promise<GeneratedPage> {
-    const designed = await DesignPage(request, route, idToken);
+export async function GenerateHtml(request: Request, route: string, idToken?: string, userId?: string): Promise<GeneratedPage> {
+    const designed = await DesignPage(request, route, idToken, userId);
     log.info('page_designed', {
         route,
         prompt_chars: designed.rawDesignerOutput,
@@ -489,8 +431,8 @@ export async function GenerateHtml(request: Request, route: string, idToken?: st
     };
 }
 
-export async function GenerateHomePage(request: Request, idToken?: string): Promise<GeneratedPage> {
-    return GenerateHtml(request, '', idToken);
+export async function GenerateHomePage(request: Request, idToken?: string, userId?: string): Promise<GeneratedPage> {
+    return GenerateHtml(request, '', idToken, userId);
 }
 
 async function GetImageDescriptionFromRoute(route: string): Promise<string> {
@@ -566,7 +508,7 @@ export async function GenerateImageFromRoute(_request: Request, route: string): 
     }
 }
 
-export async function HandleAction(request: Request, idToken?: string): Promise<Response> {
+export async function HandleAction(request: Request, idToken?: string, userId?: string): Promise<Response> {
     const url = new URL(request.url);
     const route = url.pathname;
     const method = request.method;
@@ -599,16 +541,21 @@ export async function HandleAction(request: Request, idToken?: string): Promise<
         authenticated
     });
 
-    const allowTool = (name: string) => !COMPONENT_TOOLS.has(name);
+    const allowTool = (d: McpToolDescriptor) => !COMPONENT_TOOLS.has(d.name);
 
-    const userPrompt = JSON.stringify({
+    const userPreferences = await loadUserPreferences(userId);
+    const userPromptObj: Record<string, unknown> = {
         method,
         route,
         body: bodyJson,
         rawBody: bodyJson && Object.keys(bodyJson).length > 0 ? undefined : bodyText,
         outputFormat,
         authenticated
-    });
+    };
+    if (userPreferences.length) {
+        userPromptObj.userPreferences = userPreferences.map((p: UserPreference) => p.text);
+    }
+    const userPrompt = JSON.stringify(userPromptObj);
 
     const { finalText, toolInvocations } = await runMcpToolLoop({
         request,
@@ -616,7 +563,6 @@ export async function HandleAction(request: Request, idToken?: string): Promise<
         systemPrompt: actionRunnerPrompt.prompt,
         userPrompt,
         allowTool,
-        responseFormat: 'json_object',
         scope: 'action',
         idToken
     });

@@ -10,14 +10,7 @@ import {
     GetComponents,
     UpdateComponent
 } from "./component-manager";
-import {
-    //AddFavoriteWord,
-    //GetFavoriteWords,
-    GetRandomWord,
-    GetWord,
-    GetWordOfTheDay,
-    SearchWords,
-} from "./word-manager";
+import { activeToolkit } from "./toolkits/active";
 import { generateRequestId, logger, withRequestContext } from "./logger";
 interface AuthContext {
     userId: string | null;
@@ -49,14 +42,16 @@ const registerTools = (mcp: McpServer, authContext: AuthContext) => {
 
     mcp.registerTool("GetAllComponents", {
         description: "Returns all existing reusable components as summaries.",
-        inputSchema: {}
+        inputSchema: {},
+        annotations: { readOnlyHint: true }
     }, instrument("GetAllComponents", async () => GetAllComponents(userId)));
 
     mcp.registerTool("GetComponents", {
         description: "Finds existing reusable components that match a specific purpose.",
         inputSchema: {
             purpose: z.string().min(1)
-        }
+        },
+        annotations: { readOnlyHint: true }
     }, instrument("GetComponents", async ({ purpose }) => GetComponents(purpose, userId)));
 
     mcp.registerTool("CreateComponent", {
@@ -64,7 +59,8 @@ const registerTools = (mcp: McpServer, authContext: AuthContext) => {
         inputSchema: {
             id: z.string().min(1),
             prompt: z.string().min(1)
-        }
+        },
+        annotations: { readOnlyHint: false }
     }, instrument("CreateComponent", async ({ id, prompt }) => CreateComponent(id, prompt, userId)));
 
     if (userId) {
@@ -73,65 +69,19 @@ const registerTools = (mcp: McpServer, authContext: AuthContext) => {
             inputSchema: {
                 id: z.string().min(1),
                 prompt: z.string().min(1)
-            }
+            },
+            annotations: { readOnlyHint: false }
         }, instrument("UpdateComponent", async ({ id, prompt }) => UpdateComponent(id, prompt, userId)));
     }
 
-    mcp.registerTool("GetWord", {
-        description: "Returns metadata for one exact dictionary word match.",
-        inputSchema: {
-            word: z.string()
-        }
-    }, instrument("GetWord", async ({ word }) => GetWord(word)));
-
-    mcp.registerTool("SearchWords", {
-        description: "Searches words using fuzzy matching against the word-list corpus.",
-        inputSchema: {
-            query: z.string().min(1),
-            limit: z.number().int().min(1).max(50).optional()
-        }
-    }, instrument("SearchWords", async ({ query, limit }) => SearchWords(query, limit)));
-
-    mcp.registerTool("GetRandomWord", {
-        description: "Returns a random word from the word-list corpus.",
-        inputSchema: {
-            minLength: z.number().int().min(1).max(64).optional(),
-            maxLength: z.number().int().min(1).max(64).optional()
-        }
-    }, instrument("GetRandomWord", async ({ minLength, maxLength }) => {
-        if (typeof minLength === "number" && typeof maxLength === "number" && minLength > maxLength) {
-            throw new Error("minLength cannot be larger than maxLength.");
-        }
-        return GetRandomWord(minLength, maxLength);
-    }));
-
-    mcp.registerTool("WordOfTheDay", {
-        description: "Returns the word of the day.",
-        inputSchema: {
-            
-            date: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/).optional()
-        }
-    }, instrument("WordOfTheDay", async ({  date }) => GetWordOfTheDay( date)));
-
-    // mcp.registerTool("AddFavoriteWord", {
-    //     description: "Adds a word to the authenticated user's favorites.",
-    //     inputSchema: {
-    //         word: z.string().min(1)
-    //     }
-    // }, instrument("AddFavoriteWord", async ({ word }) => {
-    //     const userId = requireUserId(authContext);
-    //     return AddFavoriteWord(userId, word);
-    // }));
-
-    // mcp.registerTool("GetFavoriteWords", {
-    //     description: "Lists the authenticated user's favorited words.",
-    //     inputSchema: {
-    //         limit: z.number().int().min(1).max(100).optional()
-    //     }
-    // }, instrument("GetFavoriteWords", async ({ limit }) => {
-    //     const userId = requireUserId(authContext);
-    //     return GetFavoriteWords(userId, limit);
-    // }));
+    for (const tool of activeToolkit.tools) {
+        if (tool.requiresAuth && !userId) continue;
+        mcp.registerTool(tool.name, {
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            annotations: { readOnlyHint: tool.readOnly }
+        }, instrument(tool.name, async (args) => tool.handler(args, { userId })));
+    }
 };
 
 function toToolContent(payload: unknown) {
@@ -219,10 +169,15 @@ export async function mcpHandler(request: IncomingMessage, response: ServerRespo
             const transport = new StreamableHTTPServerTransport({
                 enableJsonResponse: true
             });
-            const mcp = new McpServer({
-                name: "MCP management server",
-                version: "1.0.0"
-            });
+            const mcp = new McpServer(
+                {
+                    name: "MCP management server",
+                    version: "1.0.0"
+                },
+                {
+                    instructions: activeToolkit.description
+                }
+            );
 
             const authContext = await resolveAuthContext(request);
             log.info("session_start", {

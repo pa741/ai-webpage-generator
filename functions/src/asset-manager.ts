@@ -1,5 +1,4 @@
 
-import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
 import { getFirestore } from 'firebase-admin/firestore';
 import { logger } from './logger';
@@ -119,7 +118,7 @@ async function createEmbedding(input: string): Promise<number[]> {
     return embedding;
 }
 
-export async function GetModel(search: string, ai: GoogleGenAI): Promise<string> {
+export async function GetModel(search: string): Promise<string> {
     const stop = log.child('model').time('lookup', { search });
     const db = getFirestore();
 

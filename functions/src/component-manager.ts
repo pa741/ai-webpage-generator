@@ -7,6 +7,8 @@ import { logger } from "./logger";
 import { resolveLanguageModel, resolveProviderName } from "./ai-model-provider";
 import componentDesignerPrompt from "../prompts/component_designer.json";
 import componentCodegenPrompt from "../prompts/component_codegen.json";
+import componentEvaluatorPrompt from "../prompts/component_evaluator.json";
+import { GetUserPreferences, formatPreferencesForPrompt } from "./user-manager";
 import { z } from "zod";
 
 const log = logger.child("component-manager");
@@ -17,12 +19,26 @@ const USER_COMPONENTS_SUBCOLLECTION = "components";
 const COMPONENTS_STORAGE_PREFIX = "components";
 const MAX_TOOL_CALLS_PER_GENERATION = 16;
 const MAX_RECURSION_DEPTH = 3;
+const MAX_CODEGEN_RETRIES = 1;
 
 export interface ComponentSummary {
     id: string;
     shortDesc: string;
     gsPath: string;
     builtIn?: boolean;
+}
+
+export interface ComponentRejection {
+    rejected: true;
+    id: string;
+    reason: string;
+    suggestion?: string;
+}
+
+export type ComponentMutationResult = ComponentSummary | ComponentRejection;
+
+export function isRejection(result: ComponentMutationResult): result is ComponentRejection {
+    return (result as ComponentRejection).rejected === true;
 }
 
 export interface ComponentSpecProp {
@@ -192,6 +208,38 @@ export const BUILT_IN_COMPONENTS: ComponentDocument[] = [
             accessibility: "Native button element; label is read by screen readers.",
             markupSketch: "<google-login label=\"Sign in with Google\"></google-login>"
         }
+    },
+    {
+        id: "feedback-fab",
+        shortDesc: "Globally-rendered feedback FAB. Renders a floating action button that opens a mini modal for submitting free-form feedback, which is routed to the evaluateFeedback agent for processing and incorporation into user preferences or component overrides.",
+        gsPath: "",
+        prompt: "Built-in Svelte custom element that lets a signed-in user submit free-form preferences which the evaluateFeedback agent then routes into per-user component overrides or stored preferences.",
+        dependencies: [],
+        builtIn: true,
+        spec: {
+            id: "feedback-fab",
+            shortDesc: "Floating feedback action button + mini modal that captures free-form user preferences for an authenticated user.",
+            role: "feedback-control",
+            props: [],
+            slots: [],
+            styling: {
+                tailwindClasses: "",
+                palette: [],
+                notes: "Self-styled. Fixed position bottom-right, z-index above page content. Renders nothing when no user is signed in."
+            },
+            dependencies: [],
+            interactions: [
+                {
+                    trigger: "click submit on the feedback modal",
+                    method: "POST",
+                    route: "(internal: Firebase httpsCallable evaluateFeedback)",
+                    bodyShape: "{ feedback: string }",
+                    responseShape: "{ summary: string, actions: Array<{ kind: string, ... }> }"
+                }
+            ],
+            accessibility: "Button has an aria-label; modal traps focus while open; Escape closes the modal.",
+            markupSketch: "<feedback-fab></feedback-fab>"
+        }
     }
 ];
 
@@ -286,11 +334,11 @@ export async function GetComponents(purpose: string, userId?: string | null): Pr
     return scored.length > 0 ? scored : allComponents.slice(0, 5);
 }
 
-export async function CreateComponent(id: string, prompt: string, userId?: string | null): Promise<ComponentSummary> {
+export async function CreateComponent(id: string, prompt: string, userId?: string | null): Promise<ComponentMutationResult> {
     return createOrUpdateComponent("create", id, prompt, { depth: 0, lineage: [], userId: userId ?? null });
 }
 
-export async function UpdateComponent(id: string, prompt: string, userId?: string | null): Promise<ComponentSummary> {
+export async function UpdateComponent(id: string, prompt: string, userId?: string | null): Promise<ComponentMutationResult> {
     return createOrUpdateComponent("update", id, prompt, { depth: 0, lineage: [], userId: userId ?? null });
 }
 
@@ -325,6 +373,30 @@ async function executeComponentToolCallInternal(
     }
 }
 
+
+function ensureTwind(code: string) : string {
+    let dependency = `import install from "https://esm.sh/@twind/with-web-components";
+    import  { defineConfig } from "https://esm.sh/@twind/core";
+import presetAutoprefix from 'https://esm.sh/@twind/preset-autoprefix';
+import presetTailwind from 'https://esm.sh/@twind/preset-tailwind';
+    const config =  defineConfig({
+        presets: [
+            presetAutoprefix(),
+            presetTailwind()
+        ],
+        hash: false
+});
+    let withTwind = install(config)`;
+    if (!code.includes("withTwind") && !code.includes("@twind/with-web-components")) {
+        code = `${dependency}\n\n${code}`;
+    }
+    let extendsTwind = "extends withTwind(HTMLElement)";
+    if (!code.includes(extendsTwind)) {
+        code = code.replace("extends HTMLElement", extendsTwind);
+    }
+    return code;
+
+}
 // ---------------------------------------------------------------------------
 // createOrUpdateComponent — orchestrates design + codegen, routes writes
 // ---------------------------------------------------------------------------
@@ -334,7 +406,7 @@ async function createOrUpdateComponent(
     rawId: string,
     prompt: string,
     context: ToolExecutionContext
-): Promise<ComponentSummary> {
+): Promise<ComponentMutationResult> {
     if (context.depth > MAX_RECURSION_DEPTH) {
         log.warn("max_depth_exceeded", { depth: context.depth, lineage: context.lineage, rawId });
         throw new Error(`Max component recursion depth (${MAX_RECURSION_DEPTH}) exceeded.`);
@@ -392,8 +464,8 @@ async function createOrUpdateComponent(
 
     const previousCode = lookupExisting?.gsPath ? await readComponentSourceFromGsPath(lookupExisting.gsPath) : "";
     const previousSpec = lookupExisting?.spec;
-
-    const spec = await designComponent({
+    
+    const designResult = await designComponent({
         id,
         prompt,
         mode,
@@ -405,8 +477,24 @@ async function createOrUpdateComponent(
         }
     });
 
-    const code = await generateComponentCodeFromSpec({ id, spec, previousCode, mode });
+    if (designResult.kind === "rejected") {
+        opLog.warn("design_rejected", {
+            id,
+            reason: designResult.reason,
+            suggestion: designResult.suggestion ?? null
+        });
+        stop({ rejected: true, scope: writeScope.kind });
+        return {
+            rejected: true,
+            id,
+            reason: designResult.reason,
+            ...(designResult.suggestion ? { suggestion: designResult.suggestion } : {})
+        };
+    }
 
+    const spec = designResult.spec;
+    let code = await generateAndEvaluateCode({ id, spec, previousCode, mode });
+    code = ensureTwind(code);
     const gsPath = await storeComponentSourceAt(writeScope, id, code);
 
     const dependencyIds = Array.from(new Set(spec.dependencies.map((d) => d.id).filter((s): s is string => typeof s === "string" && s.length > 0)));
@@ -445,22 +533,36 @@ async function createOrUpdateComponent(
 // Phase 1: designComponent — agentic; uses tools to discover/create dependencies
 // ---------------------------------------------------------------------------
 
+type DesignerOutcome =
+    | { kind: "spec"; spec: ComponentSpec }
+    | { kind: "rejected"; reason: string; suggestion?: string };
+
 async function designComponent(input: {
     id: string;
     prompt: string;
     mode: ComponentMutationMode;
     previousSpec?: ComponentSpec;
     context: ToolExecutionContext;
-}): Promise<ComponentSpec> {
-    const userMessage = [
+}): Promise<DesignerOutcome> {
+    const userPreferences = input.context.userId ? await GetUserPreferences(input.context.userId) : [];
+    const messageParts: string[] = [
         `Component ID: ${input.id}`,
         `Operation: ${input.mode}`,
         `Task: ${input.prompt}`,
         input.previousSpec
             ? `Existing spec to revise:\n\n${JSON.stringify(input.previousSpec, null, 2)}`
-            : "No existing spec was found for this component.",
-        "Begin by inspecting the existing component library so the new component aligns with the established visual language. Then return strict JSON only matching the ComponentSpec shape described in the system prompt."
-    ].join("\n\n");
+            : "No existing spec was found for this component."
+    ];
+
+    if (userPreferences.length) {
+        messageParts.push(
+            `User preferences (apply these to the spec where they make sense — styling, language, copy tone, accessibility, etc.):\n${formatPreferencesForPrompt(userPreferences)}`
+        );
+    }
+
+    messageParts.push("Begin by inspecting the existing component library so the new component aligns with the established visual language. Then return strict JSON only matching the ComponentSpec shape described in the system prompt.");
+
+    const userMessage = messageParts.join("\n\n");
 
     const systemInstruction = componentDesignerPrompt.prompt;
     const model = componentDesignerPrompt.model;
@@ -579,7 +681,7 @@ async function designComponent(input: {
         final_chars: finalText.length
     });
 
-    return parseComponentSpec(finalText, input.id);
+    return parseDesignerOutput(finalText, input.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -591,16 +693,30 @@ async function generateComponentCodeFromSpec(input: {
     spec: ComponentSpec;
     previousCode: string;
     mode: ComponentMutationMode;
+    evaluatorFeedback?: { issues: string[]; suggestion?: string };
 }): Promise<string> {
-    const userMessage = [
+    const messageParts: string[] = [
         `Component ID: ${input.id}`,
         `Operation: ${input.mode}`,
         `Spec:\n\n${JSON.stringify(input.spec, null, 2)}`,
         input.previousCode
             ? `Existing source to revise:\n\n${input.previousCode}`
-            : "No existing source was found.",
-        "Output ONLY the final JavaScript source for this component. No JSON wrapper, no markdown fences, no commentary."
-    ].join("\n\n");
+            : "No existing source was found."
+    ];
+
+    if (input.evaluatorFeedback) {
+        const issuesBlock = input.evaluatorFeedback.issues.map((line) => `- ${line}`).join("\n");
+        const feedback = [
+            "Evaluator feedback from previous attempt — fix every issue listed before emitting code:",
+            issuesBlock,
+            input.evaluatorFeedback.suggestion ? `Suggested fix: ${input.evaluatorFeedback.suggestion}` : ""
+        ].filter((part) => part.length > 0).join("\n");
+        messageParts.push(feedback);
+    }
+
+    messageParts.push("Output ONLY the final JavaScript source for this component. No JSON wrapper, no markdown fences, no commentary.");
+
+    const userMessage = messageParts.join("\n\n");
 
     const model = componentCodegenPrompt.model;
     const codegenLog = log.child("codegen", {
@@ -639,26 +755,7 @@ async function generateComponentCodeFromSpec(input: {
   let withTwind = install({})
   https://esm.sh/@twind/preset-autoprefix
     */
-    code = `import install from "https://esm.sh/@twind/with-web-components";
-    import  { defineConfig } from "https://esm.sh/@twind/core";
-import presetAutoprefix from 'https://esm.sh/@twind/preset-autoprefix';
-import presetTailwind from 'https://esm.sh/@twind/preset-tailwind';
-    const config =  defineConfig({
-        presets: [
-            presetAutoprefix(),
-            presetTailwind()
-        ],
-        hash: false
-});
-    let withTwind = install(config);
-
-   ${code}`;
-
-
-
-
-
-    code = code.replace("extends HTMLElement", "extends withTwind(HTMLElement)");
+    
     // ensure connectedCallback and disconnectedCallback call super:
     
     codegenLog.info("codegen_complete", { code_chars: code.length });
@@ -666,8 +763,167 @@ import presetTailwind from 'https://esm.sh/@twind/preset-tailwind';
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2b: evaluator-optimizer loop around codegen
+//
+// Single-retry evaluator: generate → evaluate → on failure, regenerate once
+// with feedback, then accept whatever the second attempt produced. The retry
+// budget is intentionally tight — the evaluator is a quality safety net, not
+// an open-ended search.
+// ---------------------------------------------------------------------------
+
+interface EvaluatorVerdict {
+    ok: boolean;
+    issues: string[];
+    suggestion?: string;
+}
+
+async function evaluateComponentCode(input: { id: string; spec: ComponentSpec; code: string }): Promise<EvaluatorVerdict> {
+    const userMessage = [
+        `Component ID: ${input.id}`,
+        `Spec:\n\n${JSON.stringify(input.spec, null, 2)}`,
+        `Generated source:\n\n${input.code}`,
+        "Evaluate the source against every rule in the system prompt. Return JSON only."
+    ].join("\n\n");
+
+    const model = componentEvaluatorPrompt.model;
+    const evalLog = log.child("evaluator", {
+        id: input.id,
+        model,
+        provider: resolveProviderName(model)
+    });
+
+    const llmStop = evalLog.time("llm_call");
+    let result;
+    try {
+        result = await generateText({
+            model: resolveLanguageModel(model),
+            system: componentEvaluatorPrompt.prompt,
+            prompt: userMessage
+        });
+    } catch (error) {
+        llmStop({ ok: false, error });
+        evalLog.warn("eval_failed", { id: input.id, error });
+        return { ok: true, issues: [] };
+    }
+    llmStop({
+        ok: true,
+        finish_reason: result.finishReason,
+        total_tokens: result.totalUsage.totalTokens
+    });
+
+    const finalText = result.text?.trim() ?? "";
+    if (!finalText) {
+        evalLog.warn("empty_verdict", { id: input.id });
+        return { ok: true, issues: [] };
+    }
+
+    const text = stripCodeFence(finalText).trim();
+    const candidate = extractJsonCandidate(text) ?? text;
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+        const value = JSON.parse(candidate);
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+            parsed = value as Record<string, unknown>;
+        }
+    } catch {
+        evalLog.warn("verdict_parse_failed", { id: input.id, sample: text.slice(0, 200) });
+        return { ok: true, issues: [] };
+    }
+
+    const ok = parsed?.ok === true;
+    const issues = Array.isArray(parsed?.issues)
+        ? (parsed!.issues as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+        : [];
+    const suggestion = typeof parsed?.suggestion === "string" && parsed.suggestion.trim()
+        ? parsed.suggestion.trim()
+        : undefined;
+
+    evalLog.info("eval_done", { id: input.id, ok, issue_count: issues.length });
+
+    return { ok, issues, suggestion };
+}
+
+async function generateAndEvaluateCode(input: {
+    id: string;
+    spec: ComponentSpec;
+    previousCode: string;
+    mode: ComponentMutationMode;
+}): Promise<string> {
+    const optimizerLog = log.child("optimizer", { id: input.id });
+
+    let code = await generateComponentCodeFromSpec({
+        id: input.id,
+        spec: input.spec,
+        previousCode: input.previousCode,
+        mode: input.mode
+    });
+
+    let verdict = await evaluateComponentCode({ id: input.id, spec: input.spec, code });
+    if (verdict.ok) {
+        return code;
+    }
+
+    for (let attempt = 1; attempt <= MAX_CODEGEN_RETRIES; attempt++) {
+        optimizerLog.info("codegen_retry", {
+            id: input.id,
+            attempt,
+            issues: verdict.issues,
+            suggestion: verdict.suggestion ?? null
+        });
+
+        code = await generateComponentCodeFromSpec({
+            id: input.id,
+            spec: input.spec,
+            previousCode: input.previousCode,
+            mode: input.mode,
+            evaluatorFeedback: { issues: verdict.issues, suggestion: verdict.suggestion }
+        });
+
+        verdict = await evaluateComponentCode({ id: input.id, spec: input.spec, code });
+        if (verdict.ok) {
+            return code;
+        }
+    }
+
+    optimizerLog.warn("codegen_unresolved", {
+        id: input.id,
+        issues: verdict.issues,
+        suggestion: verdict.suggestion ?? null
+    });
+    return code;
+}
+
+// ---------------------------------------------------------------------------
 // Spec parsing
 // ---------------------------------------------------------------------------
+
+function parseDesignerOutput(rawText: string, fallbackId: string): DesignerOutcome {
+    const text = stripCodeFence(rawText).trim();
+    const candidate = extractJsonCandidate(text) ?? text;
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+        const value = JSON.parse(candidate);
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+            parsed = value as Record<string, unknown>;
+        }
+    } catch {
+        // fall through — parseComponentSpec will log its own warning if the spec is unrecoverable.
+    }
+
+    if (parsed && parsed.rejected === true) {
+        const reason = typeof parsed.reason === "string" && parsed.reason.trim()
+            ? parsed.reason.trim()
+            : "Component designer refused without giving a reason.";
+        const suggestion = typeof parsed.suggestion === "string" && parsed.suggestion.trim()
+            ? parsed.suggestion.trim()
+            : undefined;
+        return { kind: "rejected", reason, suggestion };
+    }
+
+    return { kind: "spec", spec: parseComponentSpec(rawText, fallbackId) };
+}
 
 function parseComponentSpec(rawText: string, fallbackId: string): ComponentSpec {
     const text = stripCodeFence(rawText).trim();
