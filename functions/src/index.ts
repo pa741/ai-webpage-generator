@@ -19,12 +19,16 @@ import {
     CreateComponent,
     GetAllComponents,
     GetComponents,
+    ResetComponents,
     UpdateComponent,
     isRejection,
     type ComponentMutationResult
 } from "./component-manager";
 import { SaveUserPreference, GetUserPreferences, formatPreferencesForPrompt } from "./user-manager";
+import { activeToolkit } from "./toolkits/active";
 import feedbackEvaluatorPrompt from "../prompts/feedback_evaluator.json";
+import componentInitializerPrompt from "../prompts/component_initializer.json";
+import componentCuratorPrompt from "../prompts/component_curator.json";
 
 // 3abc7eff92ea4a8eb4d2e4af396e1aa9 -> poly.pizza
 const app = initializeApp();
@@ -386,3 +390,352 @@ function defaultSummary(actions: FeedbackAction[]): string {
     const parts = Object.entries(counts).map(([kind, n]) => `${n} ${kind.replace(/_/g, " ")}`);
     return `Thanks — applied ${parts.join(", ")}.`;
 }
+
+// ---------------------------------------------------------------------------
+// initializeComponents — human-triggered seeding of the shared default
+// component library, given an initial prompt + the active toolkit's domain
+// description and tool inventory. Reuses CreateComponent end-to-end.
+//
+// updateComponents — human-triggered curation of the shared default library.
+// Reuses UpdateComponent (called with no userId, so writes go to the default
+// scope, never to per-user overrides).
+//
+// Both are deliberately NOT registered as MCP tools — they are explicit human
+// actions, not something the page-render loop can invoke.
+// ---------------------------------------------------------------------------
+
+const MAX_INIT_TOOL_STEPS = 24;
+const MAX_UPDATE_TOOL_STEPS = 24;
+const MAX_OPERATOR_PROMPT_CHARS = 2000;
+
+interface InitSkippedEntry {
+    id: string;
+    reason: string;
+}
+
+interface InitResult {
+    summary: string;
+    created: string[];
+    skipped: InitSkippedEntry[];
+}
+
+interface UpdateResult {
+    summary: string;
+    updated: string[];
+    skipped: InitSkippedEntry[];
+}
+
+function parseAgentJson(rawText: string): Record<string, unknown> | null {
+    const trimmed = rawText.trim();
+    if (!trimmed) return null;
+    const fenceStripped = trimmed.replace(/^```[a-zA-Z]*\n?/, "").replace(/```\s*$/, "").trim();
+    const start = fenceStripped.indexOf("{");
+    const end = fenceStripped.lastIndexOf("}");
+    const candidate = (start !== -1 && end > start) ? fenceStripped.slice(start, end + 1) : fenceStripped;
+    try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+    } catch {
+        // fall through
+    }
+    return null;
+}
+
+function readStringField(obj: Record<string, unknown> | null, key: string): string | null {
+    if (!obj) return null;
+    const v = obj[key];
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+function formatToolInventory(): string {
+    if (activeToolkit.tools.length === 0) return "(no domain tools registered)";
+    return activeToolkit.tools
+        .map((t) => `- ${t.name}: ${t.description}`)
+        .join("\n");
+}
+
+function formatComponentSummariesForPrompt(summaries: Awaited<ReturnType<typeof GetAllComponents>>): string {
+    if (summaries.length === 0) return "(library is empty)";
+    return summaries.map((c) => `- ${c.id}: ${c.shortDesc}`).join("\n");
+}
+
+function readOperatorPrompt(raw: unknown, fieldName: string): string {
+    if (typeof raw !== "string") {
+        throw new HttpsError("invalid-argument", `'${fieldName}' must be a string.`);
+    }
+    const trimmed = raw.trim().slice(0, MAX_OPERATOR_PROMPT_CHARS);
+    if (!trimmed) {
+        throw new HttpsError("invalid-argument", `'${fieldName}' is required.`);
+    }
+    return trimmed;
+}
+
+export const initializeComponents = onCall({
+    region: "europe-southwest1"
+}, async (request) => {
+    const requestId = (request.rawRequest.headers["x-request-id"] as string | undefined) ?? generateRequestId();
+    return withRequestContext(requestId, { fn: "initializeComponents" }, async () => {
+        const initLog = log.child("initializeComponents");
+        const stop = initLog.time("call");
+
+        const operatorPrompt = readOperatorPrompt(request.data?.prompt, "prompt");
+
+        const created: string[] = [];
+        const skipped: InitSkippedEntry[] = [];
+        let toolCallTotal = 0;
+
+        const tools: Record<string, unknown> = {
+            GetAllComponents: tool({
+                description: "Returns all existing reusable components as summaries.",
+                inputSchema: z.object({}),
+                execute: async () => {
+                    toolCallTotal += 1;
+                    return GetAllComponents();
+                }
+            }),
+            GetComponents: tool({
+                description: "Finds existing reusable components that match a specific purpose.",
+                inputSchema: z.object({
+                    purpose: z.string().min(1).describe("Short description of the component you are looking for.")
+                }),
+                execute: async ({ purpose }) => {
+                    toolCallTotal += 1;
+                    return GetComponents(purpose);
+                }
+            }),
+            CreateComponent: tool({
+                description: "Creates a new reusable JavaScript web component in the shared default library.",
+                inputSchema: z.object({
+                    id: z.string().min(1).describe("Unique component ID, kebab-case."),
+                    prompt: z.string().min(1).describe("Product-brief description of the new component.")
+                }),
+                execute: async ({ id, prompt }) => {
+                    toolCallTotal += 1;
+                    // Default-library write is enforced here by passing no userId.
+                    const result: ComponentMutationResult = await CreateComponent(id, prompt);
+                    if (isRejection(result)) {
+                        skipped.push({ id: result.id, reason: result.reason });
+                    } else if (!created.includes(result.id)) {
+                        created.push(result.id);
+                    }
+                    return result;
+                }
+            })
+        };
+
+        const existingSummaries = await GetAllComponents();
+        const userMessage = [
+            `Initial prompt:\n${operatorPrompt}`,
+            `Domain description:\n${activeToolkit.description}`,
+            `Available domain tools:\n${formatToolInventory()}`,
+            `Existing components (already in the library — do not duplicate):\n${formatComponentSummariesForPrompt(existingSummaries)}`,
+            "Plan the foundational archetypes for this domain, then call CreateComponent for each gap. Emit the final JSON summary when done."
+        ].join("\n\n");
+
+        const llmStop = initLog.time("llm_call");
+        let result;
+        try {
+            result = await generateText({
+                model: resolveLanguageModel(componentInitializerPrompt.model),
+                system: componentInitializerPrompt.prompt,
+                prompt: userMessage,
+                tools: tools as Parameters<typeof generateText>[0]["tools"],
+                stopWhen: stepCountIs(MAX_INIT_TOOL_STEPS),
+                onStepFinish(step) {
+                    initLog.debug("step_finished", {
+                        step_number: step.stepNumber,
+                        tool_calls: step.toolCalls.length,
+                        finish_reason: step.finishReason
+                    });
+                }
+            });
+        } catch (error) {
+            llmStop({ ok: false, error });
+            stop({ ok: false, reason: "llm_failed" });
+            initLog.error("llm_failed", { error });
+            throw new HttpsError("internal", "Could not initialize components.");
+        }
+
+        llmStop({
+            ok: true,
+            steps: result.steps.length,
+            tool_calls_total: toolCallTotal,
+            finish_reason: result.finishReason,
+            total_tokens: result.totalUsage.totalTokens
+        });
+
+        const parsed = parseAgentJson(result.text ?? "");
+        const summary =
+            readStringField(parsed, "summary") ??
+            (created.length > 0
+                ? `Seeded ${created.length} component${created.length === 1 ? "" : "s"}: ${created.join(", ")}.`
+                : "No components were created.");
+
+        const payload: InitResult = { summary, created, skipped };
+        stop({
+            ok: true,
+            tool_calls_total: toolCallTotal,
+            created_count: created.length,
+            skipped_count: skipped.length
+        });
+        return payload;
+    });
+});
+
+export const updateComponents = onCall({
+    region: "europe-southwest1"
+}, async (request) => {
+    const requestId = (request.rawRequest.headers["x-request-id"] as string | undefined) ?? generateRequestId();
+    return withRequestContext(requestId, { fn: "updateComponents" }, async () => {
+        const updLog = log.child("updateComponents");
+        const stop = updLog.time("call");
+
+        const operatorPrompt = readOperatorPrompt(request.data?.prompt, "prompt");
+
+        const updated: string[] = [];
+        const skipped: InitSkippedEntry[] = [];
+        let toolCallTotal = 0;
+
+        const tools: Record<string, unknown> = {
+            GetAllComponents: tool({
+                description: "Returns all existing reusable components as summaries.",
+                inputSchema: z.object({}),
+                execute: async () => {
+                    toolCallTotal += 1;
+                    return GetAllComponents();
+                }
+            }),
+            GetComponents: tool({
+                description: "Finds existing reusable components that match a specific purpose.",
+                inputSchema: z.object({
+                    purpose: z.string().min(1).describe("Short description of the component you are looking for.")
+                }),
+                execute: async ({ purpose }) => {
+                    toolCallTotal += 1;
+                    return GetComponents(purpose);
+                }
+            }),
+            UpdateComponent: tool({
+                description: "Updates an existing reusable component in the shared default library.",
+                inputSchema: z.object({
+                    id: z.string().min(1).describe("ID of the component to update."),
+                    prompt: z.string().min(1).describe("Product-brief description of the desired new state.")
+                }),
+                execute: async ({ id, prompt }) => {
+                    toolCallTotal += 1;
+                    // Critical: no userId argument => default-scope write. Do not
+                    // forward any auth context here, even if it exists on the request.
+                    const result: ComponentMutationResult = await UpdateComponent(id, prompt);
+                    if (isRejection(result)) {
+                        skipped.push({ id: result.id, reason: result.reason });
+                    } else if (!updated.includes(result.id)) {
+                        updated.push(result.id);
+                    }
+                    return result;
+                }
+            })
+        };
+
+        const existingSummaries = await GetAllComponents();
+        const userMessage = [
+            `Curation prompt:\n${operatorPrompt}`,
+            `Domain description:\n${activeToolkit.description}`,
+            `Available domain tools:\n${formatToolInventory()}`,
+            `Existing components (the candidates for change):\n${formatComponentSummariesForPrompt(existingSummaries)}`,
+            "Identify the components the prompt targets, then call UpdateComponent for each. Emit the final JSON summary when done."
+        ].join("\n\n");
+
+        const llmStop = updLog.time("llm_call");
+        let result;
+        try {
+            result = await generateText({
+                model: resolveLanguageModel(componentCuratorPrompt.model),
+                system: componentCuratorPrompt.prompt,
+                prompt: userMessage,
+                tools: tools as Parameters<typeof generateText>[0]["tools"],
+                stopWhen: stepCountIs(MAX_UPDATE_TOOL_STEPS),
+                onStepFinish(step) {
+                    updLog.debug("step_finished", {
+                        step_number: step.stepNumber,
+                        tool_calls: step.toolCalls.length,
+                        finish_reason: step.finishReason
+                    });
+                }
+            });
+        } catch (error) {
+            llmStop({ ok: false, error });
+            stop({ ok: false, reason: "llm_failed" });
+            updLog.error("llm_failed", { error });
+            throw new HttpsError("internal", "Could not update components.");
+        }
+
+        llmStop({
+            ok: true,
+            steps: result.steps.length,
+            tool_calls_total: toolCallTotal,
+            finish_reason: result.finishReason,
+            total_tokens: result.totalUsage.totalTokens
+        });
+
+        const parsed = parseAgentJson(result.text ?? "");
+        const summary =
+            readStringField(parsed, "summary") ??
+            (updated.length > 0
+                ? `Updated ${updated.length} component${updated.length === 1 ? "" : "s"}: ${updated.join(", ")}.`
+                : "No components were updated.");
+
+        const payload: UpdateResult = { summary, updated, skipped };
+        stop({
+            ok: true,
+            tool_calls_total: toolCallTotal,
+            updated_count: updated.length,
+            skipped_count: skipped.length
+        });
+        return payload;
+    });
+});
+
+// ---------------------------------------------------------------------------
+// resetComponents — destructive: wipes every default-scope and per-user-override
+// component (Firestore + Storage). Built-in components and user preferences are
+// untouched. Requires a `confirm: "RESET"` field in the request body to guard
+// against accidental invocation, since the endpoint is unauthenticated.
+// ---------------------------------------------------------------------------
+
+const RESET_CONFIRMATION_TOKEN = "RESET";
+
+export const resetComponents = onCall({
+    region: "europe-southwest1"
+}, async (request) => {
+    const requestId = (request.rawRequest.headers["x-request-id"] as string | undefined) ?? generateRequestId();
+    return withRequestContext(requestId, { fn: "resetComponents" }, async () => {
+        const resetLog = log.child("resetComponents");
+        const stop = resetLog.time("call");
+
+        const confirm = typeof request.data?.confirm === "string" ? request.data.confirm : "";
+        if (confirm !== RESET_CONFIRMATION_TOKEN) {
+            stop({ ok: false, reason: "missing_confirmation" });
+            throw new HttpsError(
+                "failed-precondition",
+                `Reset is destructive. Pass { confirm: "${RESET_CONFIRMATION_TOKEN}" } to proceed.`
+            );
+        }
+
+        let result;
+        try {
+            result = await ResetComponents();
+        } catch (error) {
+            stop({ ok: false, reason: "reset_failed", error });
+            resetLog.error("reset_failed", { error });
+            throw new HttpsError("internal", "Could not reset components.");
+        }
+
+        const summary =
+            `Cleared ${result.defaultDocsDeleted} default component(s), ` +
+            `${result.userDocsDeleted} user-override component(s), and ` +
+            `${result.storageObjectsDeleted} storage object(s).`;
+
+        stop({ ok: true, ...result });
+        return { summary, ...result };
+    });
+});

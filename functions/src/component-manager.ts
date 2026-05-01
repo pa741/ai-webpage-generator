@@ -270,6 +270,73 @@ export async function executeComponentToolCall(toolName: string, args: unknown, 
     return executeComponentToolCallInternal(toolName, args, { depth: 0, lineage: [], userId: userId ?? null });
 }
 
+export interface ResetComponentsResult {
+    defaultDocsDeleted: number;
+    userDocsDeleted: number;
+    storageObjectsDeleted: number;
+}
+
+/**
+ * Wipes every default-scope and per-user-override component from Firestore and
+ * the corresponding Storage objects. Built-in components are not stored, so
+ * they are unaffected. Destructive — intended for dev/admin reset flows only.
+ */
+export async function ResetComponents(): Promise<ResetComponentsResult> {
+    ensureFirebaseApp();
+    const db = getFirestore();
+    const bucket = getStorage().bucket();
+    const stop = log.child("reset").time("reset");
+
+    // collectionGroup("components") matches both the top-level collection AND
+    // every users/{uid}/components subcollection, in one query.
+    const snap = await db.collectionGroup(USER_COMPONENTS_SUBCOLLECTION).get();
+
+    let defaultDocsDeleted = 0;
+    let userDocsDeleted = 0;
+    const userPrefixes = new Set<string>();
+
+    let batch = db.batch();
+    let batchOps = 0;
+    const FIRESTORE_BATCH_LIMIT = 400;
+
+    for (const doc of snap.docs) {
+        const userParent = doc.ref.parent.parent;
+        if (userParent) {
+            userDocsDeleted += 1;
+            userPrefixes.add(`${USERS_COLLECTION}/${userParent.id}/${COMPONENTS_STORAGE_PREFIX}/`);
+        } else {
+            defaultDocsDeleted += 1;
+        }
+        batch.delete(doc.ref);
+        batchOps += 1;
+        if (batchOps >= FIRESTORE_BATCH_LIMIT) {
+            await batch.commit();
+            batch = db.batch();
+            batchOps = 0;
+        }
+    }
+    if (batchOps > 0) await batch.commit();
+
+    // Storage cleanup. Default-scope: blanket-delete the components/ prefix to
+    // also catch orphans from doc-write failures. User-scope: only delete
+    // prefixes derived from Firestore docs we actually saw, to avoid touching
+    // anything else that might live under users/.
+    let storageObjectsDeleted = 0;
+    const deletePrefix = async (prefix: string): Promise<number> => {
+        const [files] = await bucket.getFiles({ prefix });
+        await Promise.all(files.map((f) => f.delete({ ignoreNotFound: true }).catch(() => undefined)));
+        return files.length;
+    };
+
+    storageObjectsDeleted += await deletePrefix(`${COMPONENTS_STORAGE_PREFIX}/`);
+    for (const prefix of userPrefixes) {
+        storageObjectsDeleted += await deletePrefix(prefix);
+    }
+
+    stop({ defaultDocsDeleted, userDocsDeleted, storageObjectsDeleted });
+    return { defaultDocsDeleted, userDocsDeleted, storageObjectsDeleted };
+}
+
 export async function GetAllComponents(userId?: string | null): Promise<ComponentSummary[]> {
     ensureFirebaseApp();
     const db = getFirestore();
