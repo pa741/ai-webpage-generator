@@ -234,7 +234,7 @@ export const evaluateFeedback = onCall({
 
         const tools: Record<string, unknown> = {
             GetAllComponents: tool({
-                description: "Returns all existing reusable components as summaries.",
+                description: "Returns all existing reusable components as lightweight summaries (id, shortDesc, role). Use for a broad library survey; call GetComponents for detailed prop and slot information.",
                 inputSchema: z.object({}),
                 execute: async () => {
                     toolCallTotal += 1;
@@ -242,7 +242,7 @@ export const evaluateFeedback = onCall({
                 }
             }),
             GetComponents: tool({
-                description: "Finds existing reusable components that match a specific purpose.",
+                description: "Finds reusable components matching a purpose string. Returns each component's id, shortDesc, role, props, slots, and styling — enough to use the component correctly or borrow its design tokens.",
                 inputSchema: z.object({
                     purpose: z.string().min(1).describe("Short description of the component you are looking for.")
                 }),
@@ -318,7 +318,7 @@ export const evaluateFeedback = onCall({
                 system: feedbackEvaluatorPrompt,
                 prompt: userMessage,
                 tools: tools as Parameters<typeof generateText>[0]["tools"],
-                stopWhen: stepCountIs(MAX_FEEDBACK_TOOL_STEPS),
+                stopWhen:stepCountIs(MAX_FEEDBACK_TOOL_STEPS),
                 onStepFinish(step) {
                     fbLog.debug("step_finished", {
                         step_number: step.stepNumber,
@@ -488,7 +488,7 @@ export const initializeComponents = onCall({
 
         const tools: Record<string, unknown> = {
             GetAllComponents: tool({
-                description: "Returns all existing reusable components as summaries.",
+                description: "Returns all existing reusable components as lightweight summaries (id, shortDesc, role). Use for a broad library survey; call GetComponents for detailed prop and slot information.",
                 inputSchema: z.object({}),
                 execute: async () => {
                     toolCallTotal += 1;
@@ -496,7 +496,7 @@ export const initializeComponents = onCall({
                 }
             }),
             GetComponents: tool({
-                description: "Finds existing reusable components that match a specific purpose.",
+                description: "Finds reusable components matching a purpose string. Returns each component's id, shortDesc, role, props, slots, and styling — enough to use the component correctly or borrow its design tokens.",
                 inputSchema: z.object({
                     purpose: z.string().min(1).describe("Short description of the component you are looking for.")
                 }),
@@ -542,7 +542,7 @@ export const initializeComponents = onCall({
                 system: componentInitializerPrompt,
                 prompt: userMessage,
                 tools: tools as Parameters<typeof generateText>[0]["tools"],
-                stopWhen: stepCountIs(MAX_INIT_TOOL_STEPS),
+                stopWhen:stepCountIs(MAX_INIT_TOOL_STEPS),
                 onStepFinish(step) {
                     initLog.debug("step_finished", {
                         step_number: step.stepNumber,
@@ -600,7 +600,7 @@ export const updateComponents = onCall({
 
         const tools: Record<string, unknown> = {
             GetAllComponents: tool({
-                description: "Returns all existing reusable components as summaries.",
+                description: "Returns all existing reusable components as lightweight summaries (id, shortDesc, role). Use for a broad library survey; call GetComponents for detailed prop and slot information.",
                 inputSchema: z.object({}),
                 execute: async () => {
                     toolCallTotal += 1;
@@ -608,7 +608,7 @@ export const updateComponents = onCall({
                 }
             }),
             GetComponents: tool({
-                description: "Finds existing reusable components that match a specific purpose.",
+                description: "Finds reusable components matching a purpose string. Returns each component's id, shortDesc, role, props, slots, and styling — enough to use the component correctly or borrow its design tokens.",
                 inputSchema: z.object({
                     purpose: z.string().min(1).describe("Short description of the component you are looking for.")
                 }),
@@ -655,7 +655,7 @@ export const updateComponents = onCall({
                 system: componentCuratorPrompt,
                 prompt: userMessage,
                 tools: tools as Parameters<typeof generateText>[0]["tools"],
-                stopWhen: stepCountIs(MAX_UPDATE_TOOL_STEPS),
+                stopWhen:stepCountIs(MAX_UPDATE_TOOL_STEPS),
                 onStepFinish(step) {
                     updLog.debug("step_finished", {
                         step_number: step.stepNumber,

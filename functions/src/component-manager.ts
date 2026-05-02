@@ -27,6 +27,22 @@ export interface ComponentSummary {
     id: string;
     shortDesc: string;
     gsPath: string;
+    role?: string;
+    builtIn?: boolean;
+}
+
+// Returned by GetComponents — includes the fields callers need to use a component correctly.
+export interface ComponentUsageSummary {
+    id: string;
+    shortDesc: string;
+    role?: string;
+    props?: ComponentSpecProp[];
+    slots?: ComponentSpecSlot[];
+    styling?: {
+        tailwindClasses: string;
+        palette: string[];
+        notes: string;
+    };
     builtIn?: boolean;
 }
 
@@ -67,7 +83,6 @@ export interface ComponentSpecInteraction {
     method: "POST" | "PUT" | "DELETE" | "PATCH";
     route: string;
     bodyShape: string;
-    responseShape: string;
 }
 
 export interface ComponentSpec {
@@ -115,12 +130,12 @@ interface ComponentToolDeclaration {
 export const componentToolDeclarations: ComponentToolDeclaration[] = [
     {
         name: "GetAllComponents",
-        description: "Returns all existing reusable components as summaries.",
+        description: "Returns all existing reusable components as lightweight summaries (id, shortDesc, role). Use for a broad library survey; call GetComponents for detailed prop and slot information.",
         inputSchema: {}
     },
     {
         name: "GetComponents",
-        description: "Finds existing reusable components that match a specific purpose.",
+        description: "Finds reusable components matching a purpose string. Returns each component's id, shortDesc, role, props, slots, and styling — enough to use the component correctly in a page spec or to borrow its design tokens.",
         inputSchema: {
             purpose: {
                 type: "string",
@@ -203,8 +218,7 @@ export const BUILT_IN_COMPONENTS: ComponentDocument[] = [
                     trigger: "click on the button",
                     method: "POST",
                     route: "/__session-auth",
-                    bodyShape: "{ idToken: string }",
-                    responseShape: "{ ok: boolean }"
+                    bodyShape: "{ \"idToken\": \"string\", \"outputFormat\": { \"ok\": \"boolean\" } }"
                 }
             ],
             accessibility: "Native button element; label is read by screen readers.",
@@ -235,8 +249,7 @@ export const BUILT_IN_COMPONENTS: ComponentDocument[] = [
                     trigger: "click submit on the feedback modal",
                     method: "POST",
                     route: "(internal: Firebase httpsCallable evaluateFeedback)",
-                    bodyShape: "{ feedback: string }",
-                    responseShape: "{ summary: string, actions: Array<{ kind: string, ... }> }"
+                    bodyShape: "{ \"feedback\": \"string\", \"outputFormat\": { \"summary\": \"string\", \"actions\": \"array\" } }"
                 }
             ],
             accessibility: "Button has an aria-label; modal traps focus while open; Escape closes the modal.",
@@ -247,13 +260,88 @@ export const BUILT_IN_COMPONENTS: ComponentDocument[] = [
 
 const BUILT_IN_IDS = new Set(BUILT_IN_COMPONENTS.map((c) => c.id));
 
-function builtInSummaries(): ComponentSummary[] {
+interface ComponentFullRecord {
+    id: string;
+    shortDesc: string;
+    gsPath: string;
+    role?: string;
+    props?: ComponentSpecProp[];
+    slots?: ComponentSpecSlot[];
+    styling?: ComponentSpec['styling'];
+    builtIn?: boolean;
+}
+
+function builtInFullRecords(): ComponentFullRecord[] {
     return BUILT_IN_COMPONENTS.map((c) => ({
         id: c.id,
         shortDesc: c.shortDesc,
         gsPath: c.gsPath,
+        role: c.spec?.role,
+        props: c.spec?.props,
+        slots: c.spec?.slots,
+        styling: c.spec?.styling,
         builtIn: true
     }));
+}
+
+function fullToUsage(c: ComponentFullRecord): ComponentUsageSummary {
+    return {
+        id: c.id,
+        shortDesc: c.shortDesc,
+        ...(c.role !== undefined && { role: c.role }),
+        ...(c.props !== undefined && { props: c.props }),
+        ...(c.slots !== undefined && { slots: c.slots }),
+        ...(c.styling !== undefined && { styling: c.styling }),
+        ...(c.builtIn !== undefined && { builtIn: c.builtIn })
+    };
+}
+
+async function getAllComponentsFull(userId?: string | null): Promise<ComponentFullRecord[]> {
+    ensureFirebaseApp();
+    const db = getFirestore();
+    const [defaultSnap, userSnap] = await Promise.all([
+        db.collection(COMPONENTS_COLLECTION).limit(250).get(),
+        userId ? db.collection(USERS_COLLECTION).doc(userId).collection(USER_COMPONENTS_SUBCOLLECTION).limit(250).get() : Promise.resolve(null)
+    ]);
+
+    const merged = new Map<string, ComponentFullRecord>();
+
+    for (const c of builtInFullRecords()) {
+        merged.set(c.id, c);
+    }
+
+    for (const doc of defaultSnap.docs) {
+        const data = doc.data() as Partial<ComponentDocument>;
+        const spec = data.spec as ComponentSpec | undefined;
+        merged.set(doc.id, {
+            id: doc.id,
+            shortDesc: typeof data.shortDesc === "string" ? data.shortDesc : "",
+            gsPath: typeof data.gsPath === "string" ? data.gsPath : "",
+            ...(spec?.role && { role: spec.role }),
+            ...(spec?.props && { props: spec.props }),
+            ...(spec?.slots && { slots: spec.slots }),
+            ...(spec?.styling && { styling: spec.styling })
+        });
+    }
+
+    if (userSnap) {
+        for (const doc of userSnap.docs) {
+            const data = doc.data() as Partial<ComponentDocument>;
+            if (BUILT_IN_IDS.has(doc.id)) continue;
+            const spec = data.spec as ComponentSpec | undefined;
+            merged.set(doc.id, {
+                id: doc.id,
+                shortDesc: typeof data.shortDesc === "string" ? data.shortDesc : "",
+                gsPath: typeof data.gsPath === "string" ? data.gsPath : "",
+                ...(spec?.role && { role: spec.role }),
+                ...(spec?.props && { props: spec.props }),
+                ...(spec?.slots && { slots: spec.slots }),
+                ...(spec?.styling && { styling: spec.styling })
+            });
+        }
+    }
+
+    return Array.from(merged.values());
 }
 
 export function getBuiltInComponent(id: string): ComponentDocument | undefined {
@@ -340,53 +428,26 @@ export async function ResetComponents(): Promise<ResetComponentsResult> {
 }
 
 export async function GetAllComponents(userId?: string | null): Promise<ComponentSummary[]> {
-    ensureFirebaseApp();
-    const db = getFirestore();
-    const [defaultSnap, userSnap] = await Promise.all([
-        db.collection(COMPONENTS_COLLECTION).limit(250).get(),
-        userId ? db.collection(USERS_COLLECTION).doc(userId).collection(USER_COMPONENTS_SUBCOLLECTION).limit(250).get() : Promise.resolve(null)
-    ]);
-
-    const merged = new Map<string, ComponentSummary>();
-
-    for (const c of builtInSummaries()) {
-        merged.set(c.id, c);
-    }
-
-    for (const doc of defaultSnap.docs) {
-        const data = doc.data() as Partial<ComponentDocument>;
-        merged.set(doc.id, {
-            id: doc.id,
-            shortDesc: typeof data.shortDesc === "string" ? data.shortDesc : "",
-            gsPath: typeof data.gsPath === "string" ? data.gsPath : ""
-        });
-    }
-
-    if (userSnap) {
-        for (const doc of userSnap.docs) {
-            const data = doc.data() as Partial<ComponentDocument>;
-            if (BUILT_IN_IDS.has(doc.id)) continue;
-            merged.set(doc.id, {
-                id: doc.id,
-                shortDesc: typeof data.shortDesc === "string" ? data.shortDesc : "",
-                gsPath: typeof data.gsPath === "string" ? data.gsPath : ""
-            });
-        }
-    }
-
-    return Array.from(merged.values());
+    const all = await getAllComponentsFull(userId);
+    return all.map(c => ({
+        id: c.id,
+        shortDesc: c.shortDesc,
+        gsPath: c.gsPath,
+        ...(c.role !== undefined && { role: c.role }),
+        ...(c.builtIn !== undefined && { builtIn: c.builtIn })
+    }));
 }
 
-export async function GetComponents(purpose: string, userId?: string | null): Promise<ComponentSummary[]> {
-    const allComponents = await GetAllComponents(userId);
+export async function GetComponents(purpose: string, userId?: string | null): Promise<ComponentUsageSummary[]> {
+    const allComponents = await getAllComponentsFull(userId);
     const normalizedPurpose = purpose.toLowerCase().trim();
     if (!normalizedPurpose) {
-        return allComponents.slice(0, 20);
+        return allComponents.slice(0, 20).map(fullToUsage);
     }
 
     const terms = normalizedPurpose.split(/\s+/g).filter((term) => term.length > 1);
     if (terms.length === 0) {
-        return allComponents.slice(0, 20);
+        return allComponents.slice(0, 20).map(fullToUsage);
     }
 
     const scored = allComponents
@@ -400,7 +461,7 @@ export async function GetComponents(purpose: string, userId?: string | null): Pr
         .slice(0, 20)
         .map((entry) => entry.component);
 
-    return scored.length > 0 ? scored : allComponents.slice(0, 5);
+    return (scored.length > 0 ? scored : allComponents.slice(0, 5)).map(fullToUsage);
 }
 
 export async function CreateComponent(id: string, prompt: string, userId?: string | null): Promise<ComponentMutationResult> {
@@ -456,7 +517,7 @@ import presetTailwind from 'https://esm.sh/@twind/preset-tailwind';
         hash: false
 });
     let withTwind = install(config)`;
-    if (!code.includes("withTwind") && !code.includes("@twind/with-web-components")) {
+    if (!code.includes("@twind/with-web-components")) {
         code = `${dependency}\n\n${code}`;
     }
     let extendsTwind = "extends withTwind(HTMLElement)";

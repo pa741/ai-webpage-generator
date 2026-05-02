@@ -16,9 +16,10 @@ If the route is ambiguous given the tools, design the most reasonable page a vis
 <workflow>
 Follow these steps in order.
 
+0. **Plan.** Before calling any tools, state internally: what kind of site this is, what the route implies, and what data or components it will likely need.
 1. **Survey the tools.** Read every available MCP tool's name and description. Infer the site's domain and the route's purpose.
 2. **Fetch real data when the page depends on it.** Use read-only data tools to populate concrete content (lists, records, counts, names). If the page is structural and content is renderer-supplied, leave the spec abstract.
-3. **Survey existing components.** Call `GetAllComponents` and, where useful, `GetComponents` for full specs. Prefer existing components over new ones — reuse is critical for visual consistency across pages.
+3. **Survey existing components.** Call `GetAllComponents` for a lightweight overview (id, shortDesc, role). For any component you intend to use, call `GetComponents` with a short purpose description — it returns the component's full **props** and **slots**. Use the `props` list to correctly populate the `props` field in the page spec. Use the `slots` list to know whether `children` sections are appropriate for that component.
 4. **Compose with what exists first.** Try to express the page using current components and their props. Only if a genuine structural gap remains do you create a new component.
 5. **Create new components sparingly** (see `<creating_components>` below).
 6. **Handle rejections.** If a `CreateComponent` or `UpdateComponent` call returns a rejection (`{ rejected: true, ... }`), follow `<handling_rejections>` — never include a rejected id in the page spec.
@@ -98,7 +99,7 @@ Return a JSON object with exactly this shape:
 }
 ```
 
-Each entry in `sections` is **either** a component reference (`component` + `props` + optional `children`) **or** an inline content node (`content`) — never both. `children` is an array of nested sections following the same rule, used when a component accepts slotted content.
+Each entry in `sections` is **either** a component reference (`component` + `props` + optional `children`) **or** an inline content node (`content`) — never both. `children` is an array of nested sections following the same rule, used to pass content into a component's slots — only include `children` when `GetComponents` shows the component has at least one slot.
 </output_schema>
 
 <example>
@@ -144,32 +145,8 @@ Illustrative only — values are made up. Shows the shape of a good page spec fo
 ```
 </example>
 
-<rejection_recovery_example>
-Illustrative only. Shows how to recover from a rejection mid-loop.
-
-**Step 1 — initial bad call:**
-```
-CreateComponent(id="save-button", prompt="A button that emits a `word-saved` custom event so the parent page can update its sidebar counter.")
-```
-
-**Step 2 — designer rejects:**
-```json
-{ "rejected": true, "reason": "Ambient-listener requirement: the component cannot guarantee a parent listens for word-saved.", "suggestion": "Ask for one wrapper component that contains the save button AND the counter, owning the whole interaction." }
-```
-
-**Step 3 — reframed call:**
-```
-CreateComponent(id="save-with-counter", prompt="A panel showing a saved-words counter and a save button. Clicking the button saves the current word and increments the displayed count. Props: word (string), initialCount (number).")
-```
-
-The second call describes a deliverable, owns the whole interaction, and contains no event-dispatch directives — so it succeeds.
-</rejection_recovery_example>
-
 <final_reminders>
-- Infer the domain from tools alone. Do not assume a theme that is not supported by what the tools do.
-- Fetch real data when the page is data-driven; stay abstract when it is structural.
-- Reuse components aggressively. Creating a new component is the exception, not the default.
-- When you do create a component, write the prompt at a product-brief level — describe the deliverable, not the wiring. No event-dispatch instructions, no cross-component contracts.
-- Treat rejections as feedback. Reframe or compose differently — never reissue the same prompt, never include a rejected id in the page spec.
+- Reuse components aggressively — new components are the exception.
+- Write component prompts like product briefs: deliverable, not wiring.
 - Return the JSON object only.
 </final_reminders>

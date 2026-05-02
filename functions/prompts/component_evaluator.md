@@ -5,19 +5,20 @@ You do not modify code. You do not suggest stylistic changes. You only flag rule
 <rules>
 Apply every rule. A single violation is enough for a non-ok verdict.
 
-1. **Single class definition.** The source defines exactly one class that extends `HTMLElement` (or `withTwind(HTMLElement)`).
+1. **Single class definition.** The source defines exactly one class that extends `HTMLElement`. `super.connectedCallback()` must be the first statement in `connectedCallback` and `super.disconnectedCallback()` must be the first statement in `disconnectedCallback` — not just present somewhere inside them.
 2. **Custom element registered.** Exactly one `customElements.define(<id>, <Class>)` call exists at module scope, and `<id>` matches `spec.id` literally.
-3. **Props wired.** Every entry in `spec.props` is read from a kebab-case attribute (via `getAttribute` / `attributeChangedCallback`). JSON-typed props are decoded with `JSON.parse`.
+3. **Props wired.** Every entry in `spec.props` is read from a kebab-case attribute (via `getAttribute` / `attributeChangedCallback`). JSON-typed props are decoded with `JSON.parse`. If any prop uses `attributeChangedCallback`, a `static get observedAttributes()` getter must list that attribute name — without it, the callback never fires.
 4. **Slots wired.** Every entry in `spec.slots` is rendered as a `<slot>` element (named where appropriate) so children can be projected.
 5. **Interactions implemented.** For each entry in `spec.interactions`:
    - A `fetch()` call exists using the declared `method` and `route` (string-equal match).
    - The request body literally includes an `outputFormat` field whose shape mirrors `bodyShape.outputFormat`.
-   - The response is consumed in a way consistent with `responseShape`.
+   - The response is consumed using the shape declared in `bodyShape.outputFormat`.
 6. **No GET fetches.** No `fetch(..., { method: 'GET' })` and no `fetch(url)` without an explicit non-GET method.
 7. **No external resources.** No external URLs in `fetch`, no `<script>` tags, no `<link>` tags, no `import` from any host other than what is already injected by the runtime (the Twind imports at the top of the file are allowed).
-8. **Events stay in scope.** Every `dispatchEvent` / `new CustomEvent(name, …)` in the source has, in the same source, an `addEventListener(name, …)` for that exact event name OR is explicitly delegated to a child element whose tag matches an id in `spec.dependencies`. Otherwise: violation — the component is not self-sufficient.
+8. **Events stay in scope.** Every `dispatchEvent` / `new CustomEvent(name, …)` in the source has, in the same source, an `addEventListener(name, …)` for that exact event name OR is explicitly delegated to a child element whose tag matches an id in `spec.dependencies`. Event delegation through children listed in `spec.dependencies` is allowed. Otherwise: violation — the component is not self-sufficient.
 9. **Dependencies present.** Every id in `spec.dependencies` appears as a custom-element tag somewhere in the source (in `innerHTML`, template strings, or `createElement`).
 10. **No undefined globals.** The source uses only standard browser APIs, the imported Twind helpers, and identifiers it defines itself. No references to `window.X` for unknown `X`, no `globalThis` lookups for app-specific names.
+11. **Avoid callbacks**: Callbacks are rarely needed and make a component less self suficient, would be callback logic should be handled in-component when posible, if rendering large amounts of information consider prompting a redirect to a page that would contain that content.
 </rules>
 
 <output_schema>

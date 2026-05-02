@@ -41,13 +41,13 @@ const registerTools = (mcp: McpServer, authContext: AuthContext) => {
     const userId = authContext.userId;
 
     mcp.registerTool("GetAllComponents", {
-        description: "Returns all existing reusable components as summaries.",
+        description: "Returns all existing reusable components as lightweight summaries (id, shortDesc, role). Use for a broad library survey; call GetComponents for detailed prop and slot information.",
         inputSchema: {},
         annotations: { readOnlyHint: true }
     }, instrument("GetAllComponents", async () => GetAllComponents(userId)));
 
     mcp.registerTool("GetComponents", {
-        description: "Finds existing reusable components that match a specific purpose.",
+        description: "Finds reusable components matching a purpose string. Returns each component's id, shortDesc, role, props, slots, and styling — enough to use the component correctly in a page spec or to borrow its design tokens.",
         inputSchema: {
             purpose: z.string().min(1)
         },

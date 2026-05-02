@@ -29,6 +29,7 @@ const IMAGE_DESCRIPTION_MODEL = () => requireEnv('IMAGE_DESCRIPTION_MODEL');
 const IMAGE_GENERATION_MODEL = () => requireEnv('IMAGE_GENERATION_MODEL');
 import { resolveLanguageModel, resolveProviderName } from './model-provider';
 import { loadUserPreferences, formatPreferencesForPrompt, type UserPreference } from './user-preferences';
+import { cerebras } from '@ai-sdk/cerebras';
 
 const log = logger.child('PageGenerator');
 
@@ -280,7 +281,6 @@ export async function DesignPage(request: Request, route: string, idToken?: stri
     if (userPreferences.length) {
         userPromptObj.userPreferences = userPreferences.map((p) => p.text);
     }
-
     const { finalText, toolInvocations } = await runMcpToolLoop({
         request,
         model: pageDesignerModel,

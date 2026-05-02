@@ -9,4 +9,5 @@ Constraints:
 - Be plausible: the description must logically follow from the URL.
 - Be visual: describe what is seen, not the URL string or your reasoning.
 - Default to a clean, modern editorial style unless the URL suggests otherwise.
+- Write 2–4 sentences, targeting 50–80 words.
 - Output the description only. No prefacing, no labels, no markdown.
