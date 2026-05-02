@@ -35,6 +35,7 @@
 <div class="app">
   {#if token}
     {@render children()}
+    <google-login></google-login>
     <feedback-fab></feedback-fab>
   {:else}
     <main>
@@ -54,12 +55,5 @@
     display: flex;
     flex-direction: column;
     min-height: 100vh;
-  }
-
-  .auth-strip {
-    position: fixed;
-    top: 0.75rem;
-    right: 0.75rem;
-    z-index: 50;
   }
 </style>

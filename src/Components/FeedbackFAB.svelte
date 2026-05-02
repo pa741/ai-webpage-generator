@@ -148,7 +148,7 @@
     .fab {
         position: fixed;
         bottom: 1.25rem;
-        right: 1.25rem;
+        left: 1.25rem;
         width: 3.25rem;
         height: 3.25rem;
         border-radius: 9999px;
@@ -180,7 +180,7 @@
     .modal {
         position: fixed;
         bottom: 5.5rem;
-        right: 1.25rem;
+        left: 1.25rem;
         width: min(22rem, calc(100vw - 2rem));
         background: #ffffff;
         color: #111827;

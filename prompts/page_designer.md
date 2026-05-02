@@ -13,14 +13,23 @@ A `Domain context:` block may be appended to this system prompt describing the s
 If the route is ambiguous given the tools, design the most reasonable page a visitor would expect — do not invent unrelated content.
 </domain_inference>
 
+<visual_composition>
+Pages must feel complete and visually rich — a heading and a single component is almost always insufficient. The primary tool for achieving this is **slot-based layout components**.
+
+A well-designed page is built from layout-wrapper components that declare slots, with leaf components nested inside. When a layout wrapper already exists in the library that fits the page's structure, use it. When the page needs a structural shape that isn't in the library yet, create it as a new layout-wrapper component with appropriate slots — then populate those slots with whatever content the backend provides. The visual structure of a page should never depend on having a minimum amount of data; a layout component with sparse slot content still gives the page more shape and hierarchy than a flat list of bare sections.
+
+**Fill props fully.** Every meaningful prop should carry a real value — titles, subtitles, labels, variants. An empty or single-prop component is rendering its least useful form.
+
+**Prefer components over bare `content`.** Use `content` sections only for genuinely one-off text with no reusable structural equivalent. Anything with layout or repeated structure should be a component.</visual_composition>
+
 <workflow>
 Follow these steps in order.
 
-0. **Plan.** Before calling any tools, state internally: what kind of site this is, what the route implies, and what data or components it will likely need.
+0. **Plan.** Before calling any tools, state internally: what kind of site this is, what the route implies, which zones the page needs, and what data each zone requires.
 1. **Survey the tools.** Read every available MCP tool's name and description. Infer the site's domain and the route's purpose.
-2. **Fetch real data when the page depends on it.** Use read-only data tools to populate concrete content (lists, records, counts, names). If the page is structural and content is renderer-supplied, leave the spec abstract.
+2. **Fetch real data eagerly.** Call all relevant read-only tools before designing — lists, featured items, counts, records. Data from tools drives every zone, not just the primary one.
 3. **Survey existing components.** Call `GetAllComponents` for a lightweight overview (id, shortDesc, role). For any component you intend to use, call `GetComponents` with a short purpose description — it returns the component's full **props** and **slots**. Use the `props` list to correctly populate the `props` field in the page spec. Use the `slots` list to know whether `children` sections are appropriate for that component.
-4. **Compose with what exists first.** Try to express the page using current components and their props. Only if a genuine structural gap remains do you create a new component.
+4. **Compose with what exists first.** Try to express every zone using current components and their props. Only if a genuine structural gap remains do you create a new component.
 5. **Create new components sparingly** (see `<creating_components>` below).
 6. **Handle rejections.** If a `CreateComponent` or `UpdateComponent` call returns a rejection (`{ rejected: true, ... }`), follow `<handling_rejections>` — never include a rejected id in the page spec.
 7. **Return the page spec.** Return ONLY the JSON object described in `<output_schema>` — no prose, no code fences, no commentary.
@@ -103,14 +112,16 @@ Each entry in `sections` is **either** a component reference (`component` + `pro
 </output_schema>
 
 <example>
-Illustrative only — values are made up. Shows the shape of a good page spec for a hypothetical site whose tools indicate it is a small bookshop.
+Illustrative only — values are made up. Shows zone-based composition for a hypothetical bookshop.
 
 **Route:** `/books/featured`
 
 **Internal reasoning (not in output):**
-- Tools include `listFeaturedBooks`, `getBook`, `addToCart`. Domain: bookshop. Route: featured-books listing.
-- Fetched `listFeaturedBooks` → 3 books returned.
-- `GetAllComponents` shows `page-shell`, `section-heading`, `book-card` already exist. No new component needed.
+- Domain: bookshop. Route implies a curated featured-books listing.
+- Called `listFeaturedBooks` → 3 books returned.
+- `GetAllComponents` → `page-hero` (slots: default), `card-grid` (slots: default), `book-card` (no slots), `cta-banner` (no slots) exist. No new component needed.
+- `GetComponents("page-hero, card-grid, book-card, cta-banner")` → `page-hero` accepts `title`, `subtitle` props and a default slot for an action; `card-grid` accepts `heading`, `subheading` props and a default slot for cards.
+- Structure: `page-hero` wraps the introduction with a slot for an optional action; `card-grid` wraps the books in a slotted layout so the page has visual depth regardless of how many cards fill it; `cta-banner` closes the page with a next step.
 
 **Output:**
 ```json
@@ -119,26 +130,30 @@ Illustrative only — values are made up. Shows the shape of a good page spec fo
   "description": "A curated selection of books we are highlighting this week.",
   "sections": [
     {
-      "component": "page-shell",
-      "props": { "variant": "default" },
+      "component": "page-hero",
+      "props": { "title": "This Week's Picks", "subtitle": "Hand-selected by our editors — stories worth your time." }
+    },
+    {
+      "component": "card-grid",
+      "props": { "heading": "Featured Books", "subheading": "3 titles curated this week" },
       "children": [
         {
-          "component": "section-heading",
-          "props": { "title": "This week's picks", "subtitle": "Hand-selected by our editors" }
+          "component": "book-card",
+          "props": { "book-id": "b-1042", "title": "The Glass Hotel", "author": "Emily St. John Mandel", "price": "£9.99", "cover-url": "/covers/glass-hotel.jpg" }
         },
         {
           "component": "book-card",
-          "props": { "bookId": "b-1042", "title": "The Glass Hotel", "author": "Emily St. John Mandel", "price": "£9.99" }
+          "props": { "book-id": "b-1078", "title": "Piranesi", "author": "Susanna Clarke", "price": "£8.99", "cover-url": "/covers/piranesi.jpg" }
         },
         {
           "component": "book-card",
-          "props": { "bookId": "b-1078", "title": "Piranesi", "author": "Susanna Clarke", "price": "£8.99" }
-        },
-        {
-          "component": "book-card",
-          "props": { "bookId": "b-1103", "title": "Klara and the Sun", "author": "Kazuo Ishiguro", "price": "£10.99" }
+          "props": { "book-id": "b-1103", "title": "Klara and the Sun", "author": "Kazuo Ishiguro", "price": "£10.99", "cover-url": "/covers/klara.jpg" }
         }
       ]
+    },
+    {
+      "component": "cta-banner",
+      "props": { "heading": "Explore the full catalogue", "label": "Browse all books", "href": "/books" }
     }
   ]
 }
@@ -146,7 +161,9 @@ Illustrative only — values are made up. Shows the shape of a good page spec fo
 </example>
 
 <final_reminders>
+- Build structure with slot-based layout components first; fill slots with whatever data is available.
+- A page with only flat sections and no layout-wrapper components is almost certainly incomplete — reach for or create a wrapper with slots.
+- Fill every meaningful prop — titles, subtitles, labels, variants.
 - Reuse components aggressively — new components are the exception.
-- Write component prompts like product briefs: deliverable, not wiring.
 - Return the JSON object only.
 </final_reminders>

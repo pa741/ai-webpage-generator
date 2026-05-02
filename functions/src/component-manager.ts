@@ -504,6 +504,15 @@ async function executeComponentToolCallInternal(
 }
 
 
+function buildDebugComment(spec: ComponentSpec, verdicts: EvaluatorVerdict[]): string {
+    const specJson = JSON.stringify(spec, null, 2)
+        .split("\n").map(l => ` * ${l}`).join("\n");
+    const verdictsJson = verdicts
+        .map((v, i) => ` * [${i + 1}] ${JSON.stringify(v)}`)
+        .join("\n");
+    return `/*\n * [DEBUG] Component: ${spec.id}\n *\n * === SPEC ===\n${specJson}\n *\n * === EVALUATOR ===\n${verdictsJson}\n */\n\n`;
+}
+
 function ensureTwind(code: string) : string {
     let dependency = `import install from "https://esm.sh/@twind/with-web-components";
     import  { defineConfig } from "https://esm.sh/@twind/core";
@@ -623,8 +632,9 @@ async function createOrUpdateComponent(
     }
 
     const spec = designResult.spec;
-    let code = await generateAndEvaluateCode({ id, spec, previousCode, mode });
-    code = ensureTwind(code);
+    const { code: rawCode, verdicts } = await generateAndEvaluateCode({ id, spec, previousCode, mode });
+    const debugComment = buildDebugComment(spec, verdicts);
+    let code = debugComment + ensureTwind(rawCode);
     const gsPath = await storeComponentSourceAt(writeScope, id, code);
 
     const dependencyIds = Array.from(new Set(spec.dependencies.map((d) => d.id).filter((s): s is string => typeof s === "string" && s.length > 0)));
@@ -979,8 +989,9 @@ async function generateAndEvaluateCode(input: {
     spec: ComponentSpec;
     previousCode: string;
     mode: ComponentMutationMode;
-}): Promise<string> {
+}): Promise<{ code: string; verdicts: EvaluatorVerdict[] }> {
     const optimizerLog = log.child("optimizer", { id: input.id });
+    const verdicts: EvaluatorVerdict[] = [];
 
     let code = await generateComponentCodeFromSpec({
         id: input.id,
@@ -990,8 +1001,9 @@ async function generateAndEvaluateCode(input: {
     });
 
     let verdict = await evaluateComponentCode({ id: input.id, spec: input.spec, code });
+    verdicts.push(verdict);
     if (verdict.ok) {
-        return code;
+        return { code, verdicts };
     }
 
     for (let attempt = 1; attempt <= MAX_CODEGEN_RETRIES; attempt++) {
@@ -1011,8 +1023,9 @@ async function generateAndEvaluateCode(input: {
         });
 
         verdict = await evaluateComponentCode({ id: input.id, spec: input.spec, code });
+        verdicts.push(verdict);
         if (verdict.ok) {
-            return code;
+            return { code, verdicts };
         }
     }
 
@@ -1021,7 +1034,7 @@ async function generateAndEvaluateCode(input: {
         issues: verdict.issues,
         suggestion: verdict.suggestion ?? null
     });
-    return code;
+    return { code, verdicts };
 }
 
 // ---------------------------------------------------------------------------

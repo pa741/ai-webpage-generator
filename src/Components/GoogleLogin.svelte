@@ -112,19 +112,11 @@
     }
 </script>
 
-{#if !loading}
+{#if !loading && !currentUser}
     <div class="google-login">
-        {#if !currentUser}
-            <button type="button" class="google-button" onclick={loginWithGoogle}>
-                <span class="google-mark" aria-hidden="true">G</span>
-                <span>{label}</span>
-            </button>
-        {:else}
-            <button type="button" class="google-signout" onclick={logoutFromGoogle}>
-                Sign out{currentUser.displayName ? ` (${currentUser.displayName})` : ""}
-            </button>
-        {/if}
-
+        <button type="button" class="fab" onclick={loginWithGoogle} aria-label={label}>
+            <span class="google-mark" aria-hidden="true">G</span>
+        </button>
         {#if errorMessage}
             <p class="google-error">{errorMessage}</p>
         {/if}
@@ -133,65 +125,54 @@
 
 <style>
     .google-login {
-        display: inline-flex;
+        position: fixed;
+        bottom: 1.25rem;
+        left: 1.25rem;
+        z-index: 50;
+        display: flex;
         flex-direction: column;
+        align-items: flex-start;
         gap: 0.5rem;
         font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
     }
 
-    .google-button {
-        align-items: center;
-        background: #ffffff;
-        border: 1px solid #d1d5db;
-        border-radius: 999px;
-        color: #1f2937;
+    .fab {
+        width: 3.25rem;
+        height: 3.25rem;
+        border-radius: 9999px;
+        border: none;
+        background: #1f2937;
+        color: #f9fafb;
+        font-size: 1.1rem;
+        font-weight: 700;
         cursor: pointer;
-        display: inline-flex;
-        font-size: 0.95rem;
-        font-weight: 600;
-        gap: 0.5rem;
-        padding: 0.6rem 1rem;
-        transition: background-color 120ms ease, border-color 120ms ease;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 120ms ease, background-color 120ms ease;
     }
 
-    .google-button:hover {
-        background-color: #f9fafb;
-        border-color: #9ca3af;
+    .fab:hover {
+        background: #111827;
+        transform: translateY(-2px);
     }
 
     .google-mark {
-        align-items: center;
-        border: 1px solid #d1d5db;
-        border-radius: 50%;
-        display: inline-flex;
-        font-size: 0.8rem;
+        font-size: 1.1rem;
         font-weight: 700;
-        height: 1.4rem;
-        justify-content: center;
         line-height: 1;
-        width: 1.4rem;
-    }
-
-    .google-signout {
-        background: transparent;
-        border: 1px solid #d1d5db;
-        border-radius: 999px;
-        color: #374151;
-        cursor: pointer;
-        font-size: 0.85rem;
-        padding: 0.4rem 0.85rem;
-        transition: background-color 120ms ease, border-color 120ms ease;
-    }
-
-    .google-signout:hover {
-        background-color: #f3f4f6;
-        border-color: #9ca3af;
     }
 
     .google-error {
+        background: #fff;
+        border: 1px solid #fca5a5;
+        border-radius: 0.5rem;
         color: #b91c1c;
-        font-size: 0.8rem;
-        line-height: 1.2;
+        font-size: 0.78rem;
+        line-height: 1.3;
         margin: 0;
+        max-width: 14rem;
+        padding: 0.4rem 0.6rem;
     }
 </style>

@@ -6,6 +6,7 @@ The input may include a `User preferences` block — directives the authenticate
 
 <library_context>
 The component library you are extending has an established design language: a fixed Tailwind palette, spacing rhythm, typography scale, and component vocabulary. New work must align with it — not redefine it. You discover this language by inspecting existing components before designing.
+
 </library_context>
 
 <workflow>
