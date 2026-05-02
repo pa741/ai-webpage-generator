@@ -10,7 +10,7 @@ RULES
 1. Plain JavaScript only — no TypeScript, no JSX. Use only standard browser APIs plus the Twind imports already at the top of the file.
 2. Define a single class extending `HTMLElement`, and call `customElements.define(<id>, <class>)` at module scope. The custom-element tag MUST equal `spec.id`.
 3. Always use shadow DOM: call `this.attachShadow({ mode: 'open' })`.
-4. `super.connectedCallback()` must be the first statement in `connectedCallback`, and `super.disconnectedCallback()` must be the first statement in `disconnectedCallback`.
+4. For interactions with `trigger: "component mounts"`, perform the fetch inside `connectedCallback` using the identifying prop to build the request body. Store the response on the instance and call a `render()` method with the loaded data; show a loading state before the fetch resolves.
 5. Read each prop in `spec.props` from a kebab-case attribute via `getAttribute`. Declare a `static get observedAttributes()` returning an array of all prop attribute names — without it, `attributeChangedCallback` never fires. Decode JSON-typed props with `JSON.parse`. Implement `attributeChangedCallback` for any prop whose change should re-render.
 6. Honour `spec.slots`: render `<slot>` elements (named where appropriate) inside the shadow root so callers can nest children.
 7. Apply `spec.styling.tailwindClasses` on the root element exactly as written. Use the tokens in `spec.styling.palette` consistently. For anything Tailwind cannot express, include a `<style>` block; never reference external stylesheets.

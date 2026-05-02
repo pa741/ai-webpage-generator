@@ -504,13 +504,31 @@ async function executeComponentToolCallInternal(
 }
 
 
+function safeComment(s: string): string {
+    return s.replace(/\*\//g, "* /");
+}
+
 function buildDebugComment(spec: ComponentSpec, verdicts: EvaluatorVerdict[]): string {
-    const specJson = JSON.stringify(spec, null, 2)
+    const specJson = safeComment(JSON.stringify(spec, null, 2))
         .split("\n").map(l => ` * ${l}`).join("\n");
     const verdictsJson = verdicts
-        .map((v, i) => ` * [${i + 1}] ${JSON.stringify(v)}`)
+        .map((v, i) => ` * [${i + 1}] ${safeComment(JSON.stringify(v))}`)
         .join("\n");
     return `/*\n * [DEBUG] Component: ${spec.id}\n *\n * === SPEC ===\n${specJson}\n *\n * === EVALUATOR ===\n${verdictsJson}\n */\n\n`;
+}
+
+function ensureLifecycleSuperCalls(code: string): string {
+    for (const method of ["connectedCallback", "disconnectedCallback"]) {
+        const superCall = `super.${method}();`;
+        if (!code.includes(superCall)) {
+            code = code.replace(
+                new RegExp(`(${method}\\s*\\(\\s*\\)\\s*\\{[ \\t]*)(\\r?\\n)([ \\t]*)`),
+                (_m, opening, lineEnd, indent) =>
+                    `${opening}${lineEnd}${indent}${superCall}${lineEnd}${indent}`
+            );
+        }
+    }
+    return code;
 }
 
 function ensureTwind(code: string) : string {
@@ -533,8 +551,8 @@ import presetTailwind from 'https://esm.sh/@twind/preset-tailwind';
     if (!code.includes(extendsTwind)) {
         code = code.replace("extends HTMLElement", extendsTwind);
     }
+    code = ensureLifecycleSuperCalls(code);
     return code;
-
 }
 // ---------------------------------------------------------------------------
 // createOrUpdateComponent — orchestrates design + codegen, routes writes

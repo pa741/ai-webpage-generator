@@ -5,7 +5,7 @@ You do not modify code. You do not suggest stylistic changes. You only flag rule
 <rules>
 Apply every rule. A single violation is enough for a non-ok verdict.
 
-1. **Single class definition.** The source defines exactly one class that extends `HTMLElement`. `super.connectedCallback()` must be the first statement in `connectedCallback` and `super.disconnectedCallback()` must be the first statement in `disconnectedCallback` — not just present somewhere inside them.
+1. **Single class definition.** The source defines exactly one class that extends `HTMLElement`.
 2. **Custom element registered.** Exactly one `customElements.define(<id>, <Class>)` call exists at module scope, and `<id>` matches `spec.id` literally.
 3. **Props wired.** Every entry in `spec.props` is read from a kebab-case attribute (via `getAttribute` / `attributeChangedCallback`). JSON-typed props are decoded with `JSON.parse`. If any prop uses `attributeChangedCallback`, a `static get observedAttributes()` getter must list that attribute name — without it, the callback never fires.
 4. **Slots wired.** Every entry in `spec.slots` is rendered as a `<slot>` element (named where appropriate) so children can be projected.
