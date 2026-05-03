@@ -16,5 +16,7 @@ export interface ToolkitTool {
 export interface DomainToolkit {
     id: string;
     description: string;
+    /** Optional async override — if present, mcpHandler calls this instead of .description */
+    getDescription?: () => Promise<string>;
     tools: ToolkitTool[];
 }

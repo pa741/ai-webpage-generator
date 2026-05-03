@@ -45,9 +45,12 @@ def slug_from_task(task: dict) -> str:
     return "-".join(meaningful[:6]) or "page"
 
 
-def reset_components(functions_url: str) -> None:
+def reset_components(functions_url: str, instruction: str = "") -> None:
     url = f"{functions_url.rstrip('/')}/resetComponents"
-    resp = requests.post(url, json={"data": {"confirm": "RESET"}}, timeout=60)
+    data: dict = {"confirm": "RESET"}
+    if instruction:
+        data["instruction"] = instruction
+    resp = requests.post(url, json={"data": data}, timeout=60)
     resp.raise_for_status()
     body = resp.json()
     if "error" in body:
@@ -158,7 +161,7 @@ def main():
 
             if not args.skip_reset:
                 try:
-                    reset_components(functions_url)
+                    reset_components(functions_url, instruction=task.get("instruction", ""))
                 except Exception as exc:
                     tqdm.write(f"[{task_id}] reset failed: {exc}")
                     errors.append({"id": task_id, "stage": "reset", "error": str(exc)})

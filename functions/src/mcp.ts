@@ -169,13 +169,16 @@ export async function mcpHandler(request: IncomingMessage, response: ServerRespo
             const transport = new StreamableHTTPServerTransport({
                 enableJsonResponse: true
             });
+            const description = activeToolkit.getDescription
+                ? await activeToolkit.getDescription()
+                : activeToolkit.description;
             const mcp = new McpServer(
                 {
                     name: "MCP management server",
                     version: "1.0.0"
                 },
                 {
-                    instructions: activeToolkit.description
+                    instructions: description
                 }
             );
 

@@ -11,6 +11,7 @@ import { generateText, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { getRemoteConfig, type ServerConfig } from "firebase-admin/remote-config";
 import { initializeApp } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
 import { GetModel } from "./asset-manager";
 import { mcpHandler } from "./mcp";
 import { generateRequestId, logger, withRequestContext } from "./logger";
@@ -731,6 +732,11 @@ export const resetComponents = onCall({
             stop({ ok: false, reason: "reset_failed", error });
             resetLog.error("reset_failed", { error });
             throw new HttpsError("internal", "Could not reset components.");
+        }
+
+        const instruction = typeof request.data?.instruction === "string" ? request.data.instruction.trim() : "";
+        if (instruction) {
+            await getFirestore().doc("benchmark/context").set({ instruction, updatedAt: Date.now() });
         }
 
         const summary =
