@@ -39,14 +39,9 @@ def slug_from_task(task: dict) -> str:
     return "-".join(meaningful[:6]) or "page"
 
 
-def reset_components(functions_url: str, id_token: str) -> None:
+def reset_components(functions_url: str) -> None:
     url = f"{functions_url.rstrip('/')}/resetComponents"
-    resp = requests.post(
-        url,
-        json={"data": {"confirm": "RESET"}},
-        headers={"Authorization": f"Bearer {id_token}"},
-        timeout=60,
-    )
+    resp = requests.post(url, json={"data": {"confirm": "RESET"}}, timeout=60)
     resp.raise_for_status()
 
 
@@ -94,11 +89,6 @@ def main():
     args = parser.parse_args()
 
     id_token = os.environ.get("BENCHMARK_ID_TOKEN", "").strip()
-    if not id_token and not args.skip_reset:
-        sys.exit(
-            "BENCHMARK_ID_TOKEN env var is required for component reset. "
-            "Use --skip-reset to bypass (dev/emulator mode only)."
-        )
 
     functions_url = args.functions_url
     if not args.skip_reset and not functions_url:
@@ -141,7 +131,7 @@ def main():
         # Reset component library before each task
         if not args.skip_reset:
             try:
-                reset_components(functions_url, id_token)
+                reset_components(functions_url)
             except Exception as exc:
                 tqdm.write(f"[{task_id}] reset failed: {exc}")
                 errors.append({"id": task_id, "stage": "reset", "error": str(exc)})
