@@ -1,14 +1,17 @@
 """
-Takes screenshots of saved generated HTML pages using Playwright.
+Utility for retaking screenshots from saved page.html files without
+re-running the full page generation (useful when changing viewport size
+or after manually editing saved HTML).
 
-For each task directory that has a page.html but no shot.png, this script
-wraps the HTML fragment in a minimal full-page shell and serves it via a
-local HTTP server so that web component <script> tags (which reference
-Firebase Storage signed URLs) can load without CORS issues. A data:// URI
-has a null origin which Firebase Storage blocks by default.
+NOTE: generate_pages.py is the primary source of screenshots — it uses
+Playwright against the live app URL so web components render properly.
+Use this script only when you need to retake screenshots from saved HTML.
+
+The HTML is served via a local HTTP server (not a data:// URI) so that
+web component <script> tags can load without CORS issues.
 
 Usage:
-  python screenshot.py --out results/ [--width 1280] [--height 900]
+  python screenshot.py --out results/ [--width 1280] [--height 900] [--force]
 """
 
 import argparse

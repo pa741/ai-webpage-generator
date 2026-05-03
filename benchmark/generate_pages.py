@@ -1,11 +1,17 @@
 """
-Generates pages for each WebGen-Bench task by hitting the running SvelteKit app.
+Generates pages for each WebGen-Bench task by navigating the live SvelteKit
+app with Playwright, then saving the rendered HTML and a screenshot.
+
+Using Playwright against the real app URL (rather than re-rendering saved HTML)
+ensures web component <script> tags load with a proper HTTP origin so custom
+elements initialise before the screenshot is taken.
 
 For each task:
-  1. Calls resetComponents on the Firebase functions endpoint to clear the
-     component library (fresh slate per task).
-  2. Derives a URL slug from the task's application_type field.
-  3. GETs /{slug} from the app, saves the HTML and timing metadata.
+  1. Calls resetComponents on the Firebase functions endpoint (fresh slate).
+  2. Derives a URL slug from application_type.
+  3. Playwright navigates to /{slug}, waits for network idle (LLM generation
+     + component script loading both complete before this fires).
+  4. Saves screenshot as shot.png and body HTML as page.html.
 
 Usage:
   python generate_pages.py \\
@@ -13,7 +19,7 @@ Usage:
     --app-url http://localhost:5173 \\
     --functions-url http://localhost:5001/<project-id>/europe-southwest1 \\
     --out results/ \\
-    [--limit 5] [--skip-reset]
+    [--limit 5] [--skip-reset] [--width 1280] [--height 900]
 """
 
 import argparse
@@ -45,29 +51,50 @@ def reset_components(functions_url: str) -> None:
     resp.raise_for_status()
 
 
-def fetch_page(app_url: str, slug: str, id_token: str) -> tuple[str, float]:
+def process_task(
+    task: dict,
+    app_url: str,
+    out_root: Path,
+    width: int,
+    height: int,
+    id_token: str,
+    page,
+) -> dict:
+    task_id = task.get("id", "unknown")
+    task_dir = out_root / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = slug_from_task(task)
     url = f"{app_url.rstrip('/')}/{slug}"
-    headers = {"User-Agent": "benchmark/1.0"}
+
     if id_token:
-        # Sent as cookie (hooks.server.ts reads authToken cookie for user identity)
-        # and as Authorization header (MCP client fallback in PageGenerator.ts)
-        headers["Authorization"] = f"Bearer {id_token}"
+        page.context.add_cookies([
+            {"name": "authToken", "value": id_token, "url": app_url}
+        ])
+
     t0 = time.monotonic()
-    cookies = {"authToken": id_token} if id_token else {}
-    resp = requests.get(url, headers=headers, cookies=cookies, timeout=120)
+    # LLM generation is server-side (SSR), so the full HTML is in the initial
+    # HTTP response. networkidle then waits for component scripts to load.
+    page.goto(url, timeout=180_000, wait_until="networkidle")
     elapsed = time.monotonic() - t0
-    resp.raise_for_status()
-    return resp.text, elapsed
 
+    page.set_viewport_size({"width": width, "height": height})
+    page.screenshot(path=str(task_dir / "shot.png"), full_page=True)
 
-def extract_generated_html(full_html: str) -> str:
-    """Pull the AI-generated fragment out of the SvelteKit page."""
-    # The generated HTML is injected into a <div id="generated-content"> or similar.
-    # Try to find the inner content between the first <body> and </body>.
-    match = re.search(r"<body[^>]*>(.*?)</body>", full_html, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    return full_html
+    body_html = page.inner_html("body")
+    (task_dir / "page.html").write_text(body_html, encoding="utf-8")
+
+    metadata = {
+        "id": task_id,
+        "slug": slug,
+        "app_url": url,
+        "instruction": task.get("instruction", ""),
+        "application_type": task.get("application_type", ""),
+        "category": task.get("Category", ""),
+        "elapsed_s": round(elapsed, 2),
+    }
+    (task_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return metadata
 
 
 def main():
@@ -80,12 +107,10 @@ def main():
         help="Firebase functions base URL (emulator or prod)",
     )
     parser.add_argument("--out", default="results")
-    parser.add_argument("--limit", type=int, default=None, help="Max tasks to process")
-    parser.add_argument(
-        "--skip-reset",
-        action="store_true",
-        help="Skip component reset (useful for debugging single tasks)",
-    )
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--skip-reset", action="store_true")
+    parser.add_argument("--width", type=int, default=1280)
+    parser.add_argument("--height", type=int, default=900)
     args = parser.parse_args()
 
     id_token = os.environ.get("BENCHMARK_ID_TOKEN", "").strip()
@@ -107,58 +132,49 @@ def main():
             line = line.strip()
             if line:
                 tasks.append(json.loads(line))
-
     if args.limit:
         tasks = tasks[: args.limit]
 
     print(f"Processing {len(tasks)} task(s) → {out_root}/")
 
+    from playwright.sync_api import sync_playwright
+
     errors = []
-    for task in tqdm(tasks, desc="Generating pages"):
-        task_id = task.get("id", "unknown")
-        task_dir = out_root / task_id
-        task_dir.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        context = browser.new_context()
+        page = context.new_page()
 
-        html_path = task_dir / "page.html"
-        meta_path = task_dir / "metadata.json"
+        for task in tqdm(tasks, desc="Generating pages"):
+            task_id = task.get("id", "unknown")
+            task_dir = out_root / task_id
 
-        if html_path.exists() and meta_path.exists():
-            tqdm.write(f"[{task_id}] already exists, skipping")
-            continue
-
-        slug = slug_from_task(task)
-
-        # Reset component library before each task
-        if not args.skip_reset:
-            try:
-                reset_components(functions_url)
-            except Exception as exc:
-                tqdm.write(f"[{task_id}] reset failed: {exc}")
-                errors.append({"id": task_id, "stage": "reset", "error": str(exc)})
+            if (task_dir / "page.html").exists() and (task_dir / "shot.png").exists():
+                tqdm.write(f"[{task_id}] already exists, skipping")
                 continue
 
-        # Fetch the generated page
-        try:
-            full_html, elapsed = fetch_page(args.app_url, slug, id_token)
-        except Exception as exc:
-            tqdm.write(f"[{task_id}] fetch failed ({slug}): {exc}")
-            errors.append({"id": task_id, "stage": "fetch", "error": str(exc)})
-            continue
+            if not args.skip_reset:
+                try:
+                    reset_components(functions_url)
+                except Exception as exc:
+                    tqdm.write(f"[{task_id}] reset failed: {exc}")
+                    errors.append({"id": task_id, "stage": "reset", "error": str(exc)})
+                    continue
 
-        body_html = extract_generated_html(full_html)
-        html_path.write_text(body_html, encoding="utf-8")
+            try:
+                meta = process_task(
+                    task, args.app_url, out_root,
+                    args.width, args.height, id_token, page,
+                )
+                tqdm.write(
+                    f"[{task_id}] {meta['slug']} — {meta['elapsed_s']}s, "
+                    f"{len((task_dir / 'page.html').read_text())} chars"
+                )
+            except Exception as exc:
+                tqdm.write(f"[{task_id}] failed: {exc}")
+                errors.append({"id": task_id, "stage": "generate", "error": str(exc)})
 
-        metadata = {
-            "id": task_id,
-            "slug": slug,
-            "app_url": f"{args.app_url}/{slug}",
-            "instruction": task.get("instruction", ""),
-            "application_type": task.get("application_type", ""),
-            "category": task.get("Category", ""),
-            "elapsed_s": round(elapsed, 2),
-        }
-        meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-        tqdm.write(f"[{task_id}] {slug} — {elapsed:.1f}s, {len(body_html)} chars")
+        browser.close()
 
     if errors:
         err_path = out_root / "errors_generate.json"

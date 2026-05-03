@@ -1,10 +1,13 @@
 """
 Orchestrates the full benchmark pipeline:
-  1. generate_pages   — hit the app per task, reset components between runs
-  2. screenshot       — capture Playwright screenshots
-  3. score_appearance — VLM rates each page 1-5
-  4. score_functional — LLM evaluates HTML against ui_instruct tasks
-  5. compute_results  — aggregate and print summary
+  1. generate_pages   — Playwright navigates the live app per task, resets
+                        components between runs, saves HTML + screenshot
+  2. score_appearance — VLM rates each screenshot 1-5
+  3. score_functional — LLM evaluates saved HTML against ui_instruct tasks
+  4. compute_results  — aggregate and print summary
+
+screenshot.py is available as a standalone utility to retake screenshots from
+saved HTML without re-running generation (useful for changing viewport size).
 
 Each stage is idempotent: already-completed task results are skipped,
 so interrupted runs can be resumed safely.
@@ -15,15 +18,16 @@ Usage:
     --app-url http://localhost:5173 \\
     --functions-url http://localhost:5001/<project-id>/europe-southwest1 \\
     [--out results] [--limit 5] [--skip-reset] \\
+    [--width 1280] [--height 900] \\
     [--appearance-model claude-sonnet-4-6] \\
     [--functional-model claude-haiku-4-5-20251001] \\
     [--workers 4]
 
 Required env vars:
-  BENCHMARK_ID_TOKEN   Firebase ID token for auth
   ANTHROPIC_API_KEY    (or OPENAI_API_KEY if using GPT models)
 
 Optional env vars:
+  BENCHMARK_ID_TOKEN   Firebase ID token — sets authToken cookie for user identity
   FUNCTIONS_URL        Override --functions-url
   APPEARANCE_MODEL     Override --appearance-model
   FUNCTIONAL_MODEL     Override --functional-model
@@ -58,6 +62,8 @@ def main():
     parser.add_argument("--out", default="results")
     parser.add_argument("--limit", type=int, default=None, help="Max tasks (for smoke tests)")
     parser.add_argument("--skip-reset", action="store_true")
+    parser.add_argument("--width", type=int, default=1280)
+    parser.add_argument("--height", type=int, default=900)
     parser.add_argument(
         "--appearance-model",
         default=os.environ.get("APPEARANCE_MODEL", "claude-sonnet-4-6"),
@@ -70,8 +76,8 @@ def main():
     parser.add_argument(
         "--stages",
         nargs="+",
-        choices=["generate", "screenshot", "appearance", "functional", "results"],
-        default=["generate", "screenshot", "appearance", "functional", "results"],
+        choices=["generate", "appearance", "functional", "results"],
+        default=["generate", "appearance", "functional", "results"],
         help="Run only specific stages",
     )
     args = parser.parse_args()
@@ -85,19 +91,17 @@ def main():
 
     stages_map = {
         "generate": lambda: run_stage(
-            "Generate pages",
+            "Generate pages + screenshots",
             [python, str(here / "generate_pages.py"),
              "--tasks", tasks,
              "--app-url", args.app_url,
              "--functions-url", args.functions_url,
              "--out", out,
+             "--width", str(args.width),
+             "--height", str(args.height),
              *(["--limit", str(args.limit)] if args.limit else []),
              *(["--skip-reset"] if args.skip_reset else []),
              ],
-        ),
-        "screenshot": lambda: run_stage(
-            "Take screenshots",
-            [python, str(here / "screenshot.py"), "--out", out],
         ),
         "appearance": lambda: run_stage(
             "Score appearance",
@@ -122,7 +126,7 @@ def main():
         ),
     }
 
-    ordered = ["generate", "screenshot", "appearance", "functional", "results"]
+    ordered = ["generate", "appearance", "functional", "results"]
     for stage in ordered:
         if stage in args.stages:
             stages_map[stage]()
