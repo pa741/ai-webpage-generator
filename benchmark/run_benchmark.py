@@ -77,15 +77,16 @@ def main():
     args = parser.parse_args()
 
     python = sys.executable
-    out = args.out
-    tasks = args.tasks
+    here = Path(__file__).parent.resolve()
+    out = str(Path(args.out).resolve())
+    tasks = str(Path(args.tasks).resolve())
 
     Path(out).mkdir(parents=True, exist_ok=True)
 
     stages_map = {
         "generate": lambda: run_stage(
             "Generate pages",
-            [python, "generate_pages.py",
+            [python, str(here / "generate_pages.py"),
              "--tasks", tasks,
              "--app-url", args.app_url,
              "--functions-url", args.functions_url,
@@ -96,11 +97,11 @@ def main():
         ),
         "screenshot": lambda: run_stage(
             "Take screenshots",
-            [python, "screenshot.py", "--out", out],
+            [python, str(here / "screenshot.py"), "--out", out],
         ),
         "appearance": lambda: run_stage(
             "Score appearance",
-            [python, "score_appearance.py",
+            [python, str(here / "score_appearance.py"),
              "--out", out,
              "--model", args.appearance_model,
              "--workers", str(args.workers),
@@ -108,7 +109,7 @@ def main():
         ),
         "functional": lambda: run_stage(
             "Score functional",
-            [python, "score_functional.py",
+            [python, str(here / "score_functional.py"),
              "--tasks", tasks,
              "--out", out,
              "--model", args.functional_model,
@@ -117,7 +118,7 @@ def main():
         ),
         "results": lambda: run_stage(
             "Compute results",
-            [python, "compute_results.py", "--out", out],
+            [python, str(here / "compute_results.py"), "--out", out],
         ),
     }
 

@@ -110,15 +110,18 @@ def parse_verdict(text: str) -> dict:
                 return {"verdict": verdict, "reasoning": obj.get("reasoning", "")}
         except json.JSONDecodeError:
             pass
-    # Fallback: scan for verdict keyword
+    # Fallback: require whole-word match to avoid "NO" firing inside "NOT", etc.
     for v in ("YES", "PARTIAL", "NO", "NA"):
-        if v in text.upper():
+        if re.search(rf"\b{v}\b", text, re.IGNORECASE):
             return {"verdict": v, "reasoning": text.strip()}
     return {"verdict": "NO", "reasoning": text.strip()}
 
 
 def score_task(task_dir: Path, ui_instructs: list[dict], model: str, use_openai: bool) -> list[dict]:
-    html = (task_dir / "page.html").read_text(encoding="utf-8")[: _HTML_CHAR_LIMIT]
+    raw_html = (task_dir / "page.html").read_text(encoding="utf-8")
+    if len(raw_html) > _HTML_CHAR_LIMIT:
+        print(f"  [warn] {task_dir.name}: HTML truncated ({len(raw_html)} → {_HTML_CHAR_LIMIT} chars)")
+    html = raw_html[:_HTML_CHAR_LIMIT]
     meta = json.loads((task_dir / "metadata.json").read_text())
     instruction = meta.get("instruction", "")
 

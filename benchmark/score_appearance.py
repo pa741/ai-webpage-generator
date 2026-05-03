@@ -111,9 +111,7 @@ def _parse_score(text: str) -> int | None:
     match = re.search(r"SCORE:\s*([1-5])", text)
     if match:
         return int(match.group(1))
-    # Fallback: last standalone digit 1-5
-    digits = re.findall(r"\b([1-5])\b", text)
-    return int(digits[-1]) if digits else None
+    return None
 
 
 def score_task(task_dir: Path, model: str, use_openai: bool) -> dict:
