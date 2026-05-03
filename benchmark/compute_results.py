@@ -21,7 +21,7 @@ def load_results(out_root: Path) -> list[dict]:
         if not meta_path.exists():
             continue
 
-        meta = json.loads(meta_path.read_text())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         row = {
             "id": task_dir.name,
             "slug": meta.get("slug", ""),
@@ -39,11 +39,11 @@ def load_results(out_root: Path) -> list[dict]:
         }
 
         if app_path.exists():
-            app = json.loads(app_path.read_text())
+            app = json.loads(app_path.read_text(encoding="utf-8"))
             row["appearance_score"] = app.get("score")
 
         if func_path.exists():
-            func = json.loads(func_path.read_text())
+            func = json.loads(func_path.read_text(encoding="utf-8"))
             counts = func.get("counts", {})
             yes = counts.get("yes", 0)
             partial = counts.get("partial", 0)

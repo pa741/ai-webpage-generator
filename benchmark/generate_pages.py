@@ -168,7 +168,7 @@ def main():
                 )
                 tqdm.write(
                     f"[{task_id}] {meta['slug']} — {meta['elapsed_s']}s, "
-                    f"{len((task_dir / 'page.html').read_text())} chars"
+                    f"{len((task_dir / 'page.html').read_text(encoding='utf-8'))} chars"
                 )
             except Exception as exc:
                 tqdm.write(f"[{task_id}] failed: {exc}")
@@ -178,7 +178,7 @@ def main():
 
     if errors:
         err_path = out_root / "errors_generate.json"
-        err_path.write_text(json.dumps(errors, indent=2))
+        err_path.write_text(json.dumps(errors, indent=2), encoding="utf-8")
         print(f"\n{len(errors)} error(s) written to {err_path}")
 
     print("Done.")

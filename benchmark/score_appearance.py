@@ -115,7 +115,7 @@ def _parse_score(text: str) -> int | None:
 
 
 def score_task(task_dir: Path, model: str, use_openai: bool) -> dict:
-    meta = json.loads((task_dir / "metadata.json").read_text())
+    meta = json.loads((task_dir / "metadata.json").read_text(encoding="utf-8"))
     instruction = meta.get("instruction", meta.get("application_type", ""))
     image_b64 = load_image_b64(task_dir / "shot.png")
 
@@ -182,7 +182,7 @@ def main():
 
     if errors:
         err_path = out_root / "errors_appearance.json"
-        err_path.write_text(json.dumps(errors, indent=2))
+        err_path.write_text(json.dumps(errors, indent=2), encoding="utf-8")
         print(f"\n{len(errors)} error(s) written to {err_path}")
 
     print("Done.")

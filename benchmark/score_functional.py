@@ -122,7 +122,7 @@ def score_task(task_dir: Path, ui_instructs: list[dict], model: str, use_openai:
     if len(raw_html) > _HTML_CHAR_LIMIT:
         print(f"  [warn] {task_dir.name}: HTML truncated ({len(raw_html)} → {_HTML_CHAR_LIMIT} chars)")
     html = raw_html[:_HTML_CHAR_LIMIT]
-    meta = json.loads((task_dir / "metadata.json").read_text())
+    meta = json.loads((task_dir / "metadata.json").read_text(encoding="utf-8"))
     instruction = meta.get("instruction", "")
 
     results = []
@@ -237,7 +237,7 @@ def main():
 
     if errors:
         err_path = out_root / "errors_functional.json"
-        err_path.write_text(json.dumps(errors, indent=2))
+        err_path.write_text(json.dumps(errors, indent=2), encoding="utf-8")
         print(f"\n{len(errors)} error(s) written to {err_path}")
 
     print("Done.")
