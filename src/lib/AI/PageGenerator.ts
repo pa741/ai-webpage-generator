@@ -7,6 +7,7 @@ import { RUNWARE_API_KEY } from '$env/static/private';
 import { env } from '$env/dynamic/private';
 import { PUBLIC_FIREBASE_PROJECT_ID } from '$env/static/public';
 import { logger } from '$lib/logger';
+import { recordLlmCall, recordToolCall } from '$lib/metrics';
 
 import pageDesignerPrompt from '../../../prompts/page_designer.md?raw';
 import htmlGeneratorPrompt from '../../../prompts/html_generator.md?raw';
@@ -197,6 +198,7 @@ async function runMcpToolLoop(input: {
                     const args = (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs))
                         ? rawArgs as Record<string, unknown>
                         : {};
+                    const toolStartedAt = new Date();
                     const toolStop = loopLog.time('tool_call', {
                         tool: descriptor.name,
                         args: JSON.stringify(args)
@@ -205,15 +207,17 @@ async function runMcpToolLoop(input: {
                         const response = await mcp.callTool({ name: descriptor.name, arguments: args });
                         const parsed = parseToolJson(response.content);
                         result.toolInvocations.push({ name: descriptor.name, args, result: parsed });
-                        toolStop({
+                        const toolDuration = toolStop({
                             ok: true,
                             result_chars: typeof parsed === 'string' ? parsed.length : JSON.stringify(parsed ?? null).length
                         });
+                        recordToolCall({ toolName: descriptor.name, durationMs: toolDuration, ok: true, startedAt: toolStartedAt });
                         return parsed ?? null;
                     } catch (error) {
                         const message = error instanceof Error ? error.message : 'Unknown tool error';
                         result.toolInvocations.push({ name: descriptor.name, args, result: { error: message } });
-                        toolStop({ ok: false, error });
+                        const toolDuration = toolStop({ ok: false, error });
+                        recordToolCall({ toolName: descriptor.name, durationMs: toolDuration, ok: false, startedAt: toolStartedAt });
                         loopLog.warn('tool_call_failed', { tool: descriptor.name, error });
                         return { error: message };
                     }
@@ -221,6 +225,7 @@ async function runMcpToolLoop(input: {
             });
         }
 
+        const llmStartedAt = new Date();
         const llmStop = loopLog.time('llm_call');
         try {
             const generation = await generateText({
@@ -237,12 +242,23 @@ async function runMcpToolLoop(input: {
                     });
                 }
             });
-            llmStop({
+            const llmDuration = llmStop({
                 ok: true,
                 steps: generation.steps.length,
                 tool_calls_total: result.toolInvocations.length,
                 finish_reason: generation.finishReason,
                 total_tokens: generation.totalUsage.totalTokens
+            });
+            recordLlmCall({
+                phase: `designer.${input.scope}`,
+                model: input.model,
+                durationMs: llmDuration,
+                inputTokens: generation.totalUsage.inputTokens,
+                outputTokens: generation.totalUsage.outputTokens,
+                totalTokens: generation.totalUsage.totalTokens,
+                finishReason: generation.finishReason,
+                toolCallsTotal: result.toolInvocations.length,
+                startedAt: llmStartedAt,
             });
 
             result.finalText = generation.text ?? '';
@@ -393,11 +409,14 @@ export async function RequestHtml(_request: Request, pageSpec: PageSpec, usedCom
     });
     renderLog.info('render_input', { prompt_chars: userPrompt, pageSpec: JSON.stringify(pageSpec) });
     try {
+        const llmStartedAt = new Date();
+        const llmT0 = performance.now();
         const result = await generateText({
             model: resolveLanguageModel(htmlGeneratorModel),
             system: htmlGeneratorPrompt,
             prompt: userPrompt
         });
+        const llmDurationMs = Math.round(performance.now() - llmT0);
 
         if (typeof result.text !== 'string' || !result.text.trim()) {
             trackWebsiteGeneration(JSON.stringify(pageSpec), false);
@@ -413,6 +432,16 @@ export async function RequestHtml(_request: Request, pageSpec: PageSpec, usedCom
             input_tokens: result.usage.inputTokens,
             output_tokens: result.usage.outputTokens,
             total_tokens: result.totalUsage.totalTokens
+        });
+        recordLlmCall({
+            phase: 'html_generator',
+            model: htmlGeneratorModel,
+            durationMs: llmDurationMs,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            totalTokens: result.totalUsage.totalTokens,
+            finishReason: result.finishReason,
+            startedAt: llmStartedAt,
         });
         return cleaned;
     } catch (error) {
@@ -547,9 +576,9 @@ export async function HandleAction(request: Request, idToken?: string, userId?: 
         actionLog.warn('body_not_json', { body_chars: bodyText.length, error });
     }
 
-    const outputFormat = typeof bodyJson.outputFormat// === 'string'
-    //    ? bodyJson.outputFormat
-    //    : '{ "success": boolean, "message": string, "data": any }';
+    const outputFormat = (typeof bodyJson.outputFormat === 'string' && bodyJson.outputFormat.trim())
+        ? bodyJson.outputFormat
+        : '{ "ok": boolean, "message": string, "data": any }';
 
     const authenticated = Boolean(idToken || request.headers.get('authorization'));
     const actionRunnerModel = ACTION_RUNNER_MODEL();
@@ -568,7 +597,7 @@ export async function HandleAction(request: Request, idToken?: string, userId?: 
         route,
         body: bodyJson,
         rawBody: bodyJson && Object.keys(bodyJson).length > 0 ? undefined : bodyText,
-        outputFormat,
+        //outputFormat,
         authenticated
     };
     if (userPreferences.length) {

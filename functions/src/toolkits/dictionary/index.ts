@@ -14,7 +14,7 @@ export const dictionaryToolkit: DomainToolkit = {
     description: [
         "This site is a dictionary / word-exploration website.",
         "Audience: language learners, writers, and word enthusiasts who want to discover, define, and collect words.",
-        "Design hints: typography-forward, generous whitespace, calm reading-oriented palette; foreground definitions, etymology, and example usage; treat words themselves as visual focal points.",
+        "Design hints: typography-forward, generous whitespace, calm reading-oriented palette, beige and brown is preferred; foreground definitions, etymology, and example usage; treat words themselves as visual focal points.",
         "Sample routes the user might visit: /word/<word>, /today, /random, /search, /favorites."
     ].join(" "),
     tools: [

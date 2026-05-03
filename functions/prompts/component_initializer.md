@@ -27,8 +27,7 @@ Do NOT design specific pages or routes — that is the page designer's job. A la
 Each `CreateComponent` prompt is read by the component designer, which sees nothing of this conversation. The designer will reject any prompt that specifies event-dispatch mechanics, cross-component wiring, ambient listeners, external scripts/stylesheets, or exact visual minutiae.
 
 Write product-brief prompts. Include: a one-line purpose, visible content and rough hierarchy, the props callers will pass, and user-facing behaviour in plain language. Foundational components take props — do not bake in concrete records or route-specific data.
-
-Use kebab-case ids (e.g. `word-summary-card`, `search-bar`, `empty-state-panel`).
+Use kebab-case ids.
 </creating_components>
 
 <handling_rejections>

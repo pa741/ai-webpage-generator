@@ -67,7 +67,7 @@ Keep the prompt **high-level and outcome-oriented**. Describe what the component
 
 **Rule of thumb:** if your `CreateComponent` prompt reads like a product brief, it is right. If it reads like a code review comment or a wiring diagram, rewrite it before sending — otherwise expect a rejection.
 
-Use kebab-case ids (e.g. `product-summary-card`, `empty-state-panel`).
+Use kebab-case ids.
 </creating_components>
 
 <handling_rejections>

@@ -29,3 +29,4 @@ firebase-export-*
 .claude/settings.local.json
 emulator-data_backuo/*
 emulator-data_backup2/*
+metrics/
