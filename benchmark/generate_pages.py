@@ -127,7 +127,7 @@ def main():
     out_root.mkdir(parents=True, exist_ok=True)
 
     tasks = []
-    with open(tasks_path) as f:
+    with open(tasks_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:

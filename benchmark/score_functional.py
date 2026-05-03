@@ -179,7 +179,7 @@ def main():
     # Load ui_instruct per task_id from the benchmark data
     tasks_path = Path(args.tasks)
     ui_by_id: dict[str, list[dict]] = {}
-    with open(tasks_path) as f:
+    with open(tasks_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
