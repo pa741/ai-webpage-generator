@@ -4,6 +4,7 @@ import { getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { logger } from "./logger";
+import { withComponentMetrics, recordLlmCall, recordToolCall } from "./metrics";
 import { resolveLanguageModel, resolveProviderName } from "./ai-model-provider";
 import { loadPrompt, requireEnv } from "./prompt-loader";
 
@@ -26,7 +27,7 @@ const MAX_CODEGEN_RETRIES = 1;
 export interface ComponentSummary {
     id: string;
     shortDesc: string;
-    gsPath: string;
+    //
     role?: string;
     builtIn?: boolean;
 }
@@ -98,7 +99,6 @@ export interface ComponentSpec {
     };
     dependencies: ComponentSpecDependency[];
     interactions: ComponentSpecInteraction[];
-    accessibility: string;
     markupSketch: string;
 }
 
@@ -106,6 +106,7 @@ interface ComponentDocument extends ComponentSummary {
     prompt: string;
     dependencies: string[];
     spec?: ComponentSpec;
+    gsPath?: string;
     builtIn?: boolean;
     createdAt?: Timestamp;
     updatedAt?: Timestamp;
@@ -189,7 +190,7 @@ export const BUILT_IN_COMPONENTS: ComponentDocument[] = [
     {
         id: "google-login",
         shortDesc: "Google sign-in button. Renders a button when no user is signed in; renders nothing when a user is already signed in.",
-        gsPath: "",
+        //gsPath: "",
         prompt: "Built-in Svelte custom element wrapping firebase/auth Google sign-in.",
         dependencies: [],
         builtIn: true,
@@ -221,14 +222,13 @@ export const BUILT_IN_COMPONENTS: ComponentDocument[] = [
                     bodyShape: "{ \"idToken\": \"string\", \"outputFormat\": { \"ok\": \"boolean\" } }"
                 }
             ],
-            accessibility: "Native button element; label is read by screen readers.",
             markupSketch: "<google-login label=\"Sign in with Google\"></google-login>"
         }
     },
     {
         id: "feedback-fab",
         shortDesc: "Globally-rendered feedback FAB. Renders a floating action button that opens a mini modal for submitting free-form feedback, which is routed to the evaluateFeedback agent for processing and incorporation into user preferences or component overrides.",
-        gsPath: "",
+        //gsPath: "",
         prompt: "Built-in Svelte custom element that lets a signed-in user submit free-form preferences which the evaluateFeedback agent then routes into per-user component overrides or stored preferences.",
         dependencies: [],
         builtIn: true,
@@ -252,7 +252,6 @@ export const BUILT_IN_COMPONENTS: ComponentDocument[] = [
                     bodyShape: "{ \"feedback\": \"string\", \"outputFormat\": { \"summary\": \"string\", \"actions\": \"array\" } }"
                 }
             ],
-            accessibility: "Button has an aria-label; modal traps focus while open; Escape closes the modal.",
             markupSketch: "<feedback-fab></feedback-fab>"
         }
     }
@@ -275,7 +274,7 @@ function builtInFullRecords(): ComponentFullRecord[] {
     return BUILT_IN_COMPONENTS.map((c) => ({
         id: c.id,
         shortDesc: c.shortDesc,
-        gsPath: c.gsPath,
+        gsPath: "",
         role: c.spec?.role,
         props: c.spec?.props,
         slots: c.spec?.slots,
@@ -432,7 +431,7 @@ export async function GetAllComponents(userId?: string | null): Promise<Componen
     return all.map(c => ({
         id: c.id,
         shortDesc: c.shortDesc,
-        gsPath: c.gsPath,
+        //gsPath: c.gsPath,
         ...(c.role !== undefined && { role: c.role }),
         ...(c.builtIn !== undefined && { builtIn: c.builtIn })
     }));
@@ -582,109 +581,111 @@ async function createOrUpdateComponent(
         throw new Error(`Recursive component cycle detected for component '${id}'.`);
     }
 
-    // Decide which scope this mutation writes to:
-    //   create               → default (shared library)
-    //   update + userId      → user override
-    //   update + no userId   → default (preserves prior behaviour for unauthenticated flows;
-    //                          in practice the MCP layer hides UpdateComponent when no userId,
-    //                          so this branch is rare).
-    const writeScope: Scope = mode === "update" && context.userId
-        ? { kind: "user", userId: context.userId }
-        : { kind: "default" };
+    return withComponentMetrics(id, mode, async () => {
+        // Decide which scope this mutation writes to:
+        //   create               → default (shared library)
+        //   update + userId      → user override
+        //   update + no userId   → default (preserves prior behaviour for unauthenticated flows;
+        //                          in practice the MCP layer hides UpdateComponent when no userId,
+        //                          so this branch is rare).
+        const writeScope: Scope = mode === "update" && context.userId
+            ? { kind: "user", userId: context.userId }
+            : { kind: "default" };
 
-    const opLog = log.child(mode, {
-        id,
-        depth: context.depth,
-        lineage: context.lineage,
-        scope: writeScope.kind,
-        userId: context.userId ?? null
-    });
-    const stop = opLog.time("op", { prompt_chars: prompt.length });
-
-    // Resolve previous code/spec from the user override first (if applicable),
-    // falling back to the default. This makes the first user override start
-    // from the default's spec, which is what we want.
-    const userExisting = context.userId ? await readComponentDocAt({ kind: "user", userId: context.userId }, id) : null;
-    const defaultExisting = await readComponentDocAt({ kind: "default" }, id);
-
-    const writeScopeExisting = writeScope.kind === "user" ? userExisting : defaultExisting;
-    const lookupExisting = userExisting ?? defaultExisting;
-
-    if (mode === "create" && writeScopeExisting?.gsPath) {
-        stop({ reused: true, scope: writeScope.kind });
-        return {
+        const opLog = log.child(mode, {
             id,
-            shortDesc: writeScopeExisting.shortDesc ?? "",
-            gsPath: writeScopeExisting.gsPath
-        };
-    }
-
-    const previousCode = lookupExisting?.gsPath ? await readComponentSourceFromGsPath(lookupExisting.gsPath) : "";
-    const previousSpec = lookupExisting?.spec;
-    
-    const designResult = await designComponent({
-        id,
-        prompt,
-        mode,
-        previousSpec,
-        context: {
             depth: context.depth,
-            lineage: [...context.lineage, id],
+            lineage: context.lineage,
+            scope: writeScope.kind,
             userId: context.userId ?? null
-        }
-    });
-
-    if (designResult.kind === "rejected") {
-        opLog.warn("design_rejected", {
-            id,
-            reason: designResult.reason,
-            suggestion: designResult.suggestion ?? null
         });
-        stop({ rejected: true, scope: writeScope.kind });
-        return {
-            rejected: true,
+        const stop = opLog.time("op", { prompt_chars: prompt.length });
+
+        // Resolve previous code/spec from the user override first (if applicable),
+        // falling back to the default. This makes the first user override start
+        // from the default's spec, which is what we want.
+        const userExisting = context.userId ? await readComponentDocAt({ kind: "user", userId: context.userId }, id) : null;
+        const defaultExisting = await readComponentDocAt({ kind: "default" }, id);
+
+        const writeScopeExisting = writeScope.kind === "user" ? userExisting : defaultExisting;
+        const lookupExisting = userExisting ?? defaultExisting;
+
+        if (mode === "create" && writeScopeExisting?.gsPath) {
+            stop({ reused: true, scope: writeScope.kind });
+            return {
+                id,
+                shortDesc: writeScopeExisting.shortDesc ?? "",
+                gsPath: writeScopeExisting.gsPath
+            };
+        }
+
+        const previousCode = lookupExisting?.gsPath ? await readComponentSourceFromGsPath(lookupExisting.gsPath) : "";
+        const previousSpec = lookupExisting?.spec;
+
+        const designResult = await designComponent({
             id,
-            reason: designResult.reason,
-            ...(designResult.suggestion ? { suggestion: designResult.suggestion } : {})
+            prompt,
+            mode,
+            previousSpec,
+            context: {
+                depth: context.depth,
+                lineage: [...context.lineage, id],
+                userId: context.userId ?? null
+            }
+        });
+
+        if (designResult.kind === "rejected") {
+            opLog.warn("design_rejected", {
+                id,
+                reason: designResult.reason,
+                suggestion: designResult.suggestion ?? null
+            });
+            stop({ rejected: true, scope: writeScope.kind });
+            return {
+                rejected: true,
+                id,
+                reason: designResult.reason,
+                ...(designResult.suggestion ? { suggestion: designResult.suggestion } : {})
+            };
+        }
+
+        const spec = designResult.spec;
+        const { code: rawCode, verdicts } = await generateAndEvaluateCode({ id, spec, previousCode, mode });
+        const debugComment = buildDebugComment(spec, verdicts);
+        let code = debugComment + ensureTwind(rawCode);
+        const gsPath = await storeComponentSourceAt(writeScope, id, code);
+
+        const dependencyIds = Array.from(new Set(spec.dependencies.map((d) => d.id).filter((s): s is string => typeof s === "string" && s.length > 0)));
+
+        const payload: Record<string, unknown> = {
+            id,
+            shortDesc: spec.shortDesc,
+            gsPath,
+            prompt,
+            dependencies: dependencyIds,
+            spec,
+            updatedAt: FieldValue.serverTimestamp()
         };
-    }
 
-    const spec = designResult.spec;
-    const { code: rawCode, verdicts } = await generateAndEvaluateCode({ id, spec, previousCode, mode });
-    const debugComment = buildDebugComment(spec, verdicts);
-    let code = debugComment + ensureTwind(rawCode);
-    const gsPath = await storeComponentSourceAt(writeScope, id, code);
+        payload.createdAt = writeScopeExisting?.createdAt ?? FieldValue.serverTimestamp();
 
-    const dependencyIds = Array.from(new Set(spec.dependencies.map((d) => d.id).filter((s): s is string => typeof s === "string" && s.length > 0)));
+        const docRef = docRefFor(writeScope, id);
+        await docRef.set(payload, { merge: true });
 
-    const payload: Record<string, unknown> = {
-        id,
-        shortDesc: spec.shortDesc,
-        gsPath,
-        prompt,
-        dependencies: dependencyIds,
-        spec,
-        updatedAt: FieldValue.serverTimestamp()
-    };
+        stop({
+            reused: false,
+            code_chars: code.length,
+            dependencies: dependencyIds,
+            gsPath,
+            scope: writeScope.kind
+        });
 
-    payload.createdAt = writeScopeExisting?.createdAt ?? FieldValue.serverTimestamp();
-
-    const docRef = docRefFor(writeScope, id);
-    await docRef.set(payload, { merge: true });
-
-    stop({
-        reused: false,
-        code_chars: code.length,
-        dependencies: dependencyIds,
-        gsPath,
-        scope: writeScope.kind
+        return {
+            id,
+            shortDesc: spec.shortDesc,
+            gsPath
+        };
     });
-
-    return {
-        id,
-        shortDesc: spec.shortDesc,
-        gsPath
-    };
 }
 
 // ---------------------------------------------------------------------------
@@ -742,6 +743,7 @@ async function designComponent(input: {
             throw new Error(`Exceeded max tool calls (${MAX_TOOL_CALLS_PER_GENERATION}) while designing component '${input.id}'.`);
         }
 
+        const toolStartedAt = new Date();
         const toolStop = designLog.time("tool_call", {
             tool: toolName,
             tool_index: toolCallCount
@@ -749,11 +751,13 @@ async function designComponent(input: {
 
         try {
             const result = await fn();
-            toolStop({ ok: true });
+            const toolDuration = toolStop({ ok: true });
+            recordToolCall({ toolName, durationMs: toolDuration, ok: true, startedAt: toolStartedAt });
             return result;
         } catch (error) {
             const message = error instanceof Error ? error.message : "Unknown tool execution error";
-            toolStop({ ok: false, error: message });
+            const toolDuration = toolStop({ ok: false, error: message });
+            recordToolCall({ toolName, durationMs: toolDuration, ok: false, startedAt: toolStartedAt });
             throw error;
         }
     };
@@ -804,6 +808,7 @@ async function designComponent(input: {
         });
     }
 
+    const llmStartedAt = new Date();
     const llmStop = designLog.time("llm_call");
     const result = await generateText({
         model: resolveLanguageModel(model),
@@ -819,12 +824,23 @@ async function designComponent(input: {
             });
         }
     });
-    llmStop({
+    const llmDuration = llmStop({
         ok: true,
         steps: result.steps.length,
         tool_calls_total: toolCallCount,
         finish_reason: result.finishReason,
         total_tokens: result.totalUsage.totalTokens
+    });
+    recordLlmCall({
+        phase: "component_designer",
+        model,
+        durationMs: llmDuration,
+        inputTokens: result.totalUsage.inputTokens,
+        outputTokens: result.totalUsage.outputTokens,
+        totalTokens: result.totalUsage.totalTokens,
+        finishReason: result.finishReason,
+        toolCallsTotal: toolCallCount,
+        startedAt: llmStartedAt,
     });
 
     const finalText = result.text?.trim();
@@ -884,16 +900,27 @@ async function generateComponentCodeFromSpec(input: {
         provider: resolveProviderName(model)
     });
 
+    const llmStartedAt = new Date();
     const llmStop = codegenLog.time("llm_call");
     const result = await generateText({
         model: resolveLanguageModel(model),
         system: componentCodegenPrompt,
         prompt: userMessage
     });
-    llmStop({
+    const llmDuration = llmStop({
         ok: true,
         finish_reason: result.finishReason,
         total_tokens: result.totalUsage.totalTokens
+    });
+    recordLlmCall({
+        phase: input.evaluatorFeedback ? "component_codegen_retry" : "component_codegen",
+        model,
+        durationMs: llmDuration,
+        inputTokens: result.totalUsage.inputTokens,
+        outputTokens: result.totalUsage.outputTokens,
+        totalTokens: result.totalUsage.totalTokens,
+        finishReason: result.finishReason,
+        startedAt: llmStartedAt,
     });
 
     const finalText = result.text?.trim();
@@ -935,13 +962,17 @@ interface EvaluatorVerdict {
     suggestion?: string;
 }
 
-async function evaluateComponentCode(input: { id: string; spec: ComponentSpec; code: string }): Promise<EvaluatorVerdict> {
-    const userMessage = [
+async function evaluateComponentCode(input: { id: string; spec: ComponentSpec; code: string; mode: ComponentMutationMode }): Promise<EvaluatorVerdict> {
+    const parts = [
         `Component ID: ${input.id}`,
         `Spec:\n\n${JSON.stringify(input.spec, null, 2)}`,
         `Generated source:\n\n${input.code}`,
-        "Evaluate the source against every rule in the system prompt. Return JSON only."
-    ].join("\n\n");
+    ];
+    if (input.mode === "update") {
+        parts.push("Note: this is an update to an existing component. The class extending `withTwind(HTMLElement)` instead of `HTMLElement` directly is intentional — Twind was applied by an earlier pipeline step and must be preserved. Do not flag it as a Rule 1 violation.");
+    }
+    parts.push("Evaluate the source against every rule in the system prompt. Return JSON only.");
+    const userMessage = parts.join("\n\n");
 
     const model = requireEnv("COMPONENT_EVALUATOR_MODEL");
     const evalLog = log.child("evaluator", {
@@ -950,6 +981,7 @@ async function evaluateComponentCode(input: { id: string; spec: ComponentSpec; c
         provider: resolveProviderName(model)
     });
 
+    const llmStartedAt = new Date();
     const llmStop = evalLog.time("llm_call");
     let result;
     try {
@@ -963,10 +995,20 @@ async function evaluateComponentCode(input: { id: string; spec: ComponentSpec; c
         evalLog.warn("eval_failed", { id: input.id, error });
         return { ok: true, issues: [] };
     }
-    llmStop({
+    const llmDuration = llmStop({
         ok: true,
         finish_reason: result.finishReason,
         total_tokens: result.totalUsage.totalTokens
+    });
+    recordLlmCall({
+        phase: "component_evaluator",
+        model,
+        durationMs: llmDuration,
+        inputTokens: result.totalUsage.inputTokens,
+        outputTokens: result.totalUsage.outputTokens,
+        totalTokens: result.totalUsage.totalTokens,
+        finishReason: result.finishReason,
+        startedAt: llmStartedAt,
     });
 
     const finalText = result.text?.trim() ?? "";
@@ -1018,7 +1060,7 @@ async function generateAndEvaluateCode(input: {
         mode: input.mode
     });
 
-    let verdict = await evaluateComponentCode({ id: input.id, spec: input.spec, code });
+    let verdict = await evaluateComponentCode({ id: input.id, spec: input.spec, code, mode: input.mode });
     verdicts.push(verdict);
     if (verdict.ok) {
         return { code, verdicts };
@@ -1040,7 +1082,7 @@ async function generateAndEvaluateCode(input: {
             evaluatorFeedback: { issues: verdict.issues, suggestion: verdict.suggestion }
         });
 
-        verdict = await evaluateComponentCode({ id: input.id, spec: input.spec, code });
+        verdict = await evaluateComponentCode({ id: input.id, spec: input.spec, code, mode: input.mode });
         verdicts.push(verdict);
         if (verdict.ok) {
             return { code, verdicts };
@@ -1119,7 +1161,6 @@ function parseComponentSpec(rawText: string, fallbackId: string): ComponentSpec 
             })).filter((d) => d.id)
             : [],
         interactions: Array.isArray(parsed.interactions) ? parsed.interactions.filter(isObject) as ComponentSpecInteraction[] : [],
-        accessibility: typeof parsed.accessibility === "string" ? parsed.accessibility : "",
         markupSketch: typeof parsed.markupSketch === "string" ? parsed.markupSketch : ""
     };
 }

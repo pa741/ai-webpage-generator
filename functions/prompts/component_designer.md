@@ -52,7 +52,7 @@ These are non-negotiable. Violating any of them produces an invalid spec.
 - **Slots declare nesting.** If the component is a wrapper or layout, declare at least one slot. Leaf components have an empty `slots` array.
 - **Dependencies are exhaustive.** Every component-id rendered as a custom element in `markupSketch` must appear in `dependencies`. Codegen is single-shot and cannot discover new components on its own.
 - **Markup sketch is the blueprint.** Use kebab-case custom-element tags. Show element types, slot positions (`<slot>` or `<slot name="…"/>`), and where each child renders.
-- **Components own their data.** Prefer a single identifying prop (e.g. `word`, `product-id`, `slug`) over multiple display-data props (title, description, phonetic, price, etc.). Model the initial data load as a `"component mounts"` interaction — the component fetches the full entity itself and renders from the response. Only use display-data props for content the page designer genuinely controls: labels, configuration, theme variants.
+- **Components own their data.** A prop is a configuration decision the page designer makes — it is not a data-forwarding pipe. When a component displays an entity, it owns the responsibility of fetching and rendering that entity's fields. The page designer passes the identity (the key that names the entity); the component resolves everything else itself via a `"component mounts"` interaction. A component whose props mirror the server response shape has leaked its data responsibilities upward onto the page designer.
 - **Server interactions never use GET.** Allowed methods: `POST`, `PUT`, `DELETE`, `PATCH`. The trigger field may be a user action (`"click on save button"`) or `"component mounts"` for fetches that run on load. Routes must be intent-descriptive — never external URLs, never placeholders.
 - **`bodyShape` is the entire interaction contract.** Write it as a JSON object where every scalar value is a quoted type name (`"string"`, `"number"`, `"boolean"`), arrays are represented as a single-element JSON array containing the element type, and nested objects follow the same convention recursively. Never use bare `[]`, bare `{}`, or TypeScript-style suffixes like `"string[]"`. Examples: `["string"]` for a string array, `[{"id": "string", "word": "string"}]` for an object array. Always include an `outputFormat` key: `{ "wordId": "string", "outputFormat": { "ok": "boolean", "tags": ["string"], "results": [{"id": "string", "title": "string"}] } }`. The codegen sends this body verbatim and parses the response using `outputFormat`.
 - **Self-contained styling.** Tailwind utilities are globally available; assume nothing else. Do not rely on external scripts or stylesheets unless they live inside a declared dependency that documents them.
@@ -104,65 +104,58 @@ Return EITHER a rejection (see `<rejection_protocol>`) OR a JSON object with exa
       "bodyShape": "{ \"wordId\": \"string\", \"outputFormat\": { \"ok\": \"boolean\", \"savedAt\": \"string\", \"suggestions\": [{\"id\": \"string\", \"word\": \"string\"}] } }"
     }
   ],
-  "accessibility": "ARIA roles, keyboard handlers, focus management notes for codegen",
   "markupSketch": "real HTML with Tailwind classes, <slot> elements, and sub-component tags — this is the codegen's verbatim blueprint"
 }
 ```
 </output_schema>
 
 <example>
-Illustrative example — not a template to copy. Shows workflow shape, slot usage, and dependency declaration.
+Illustrative example — not a template to copy. Shows workflow shape and spec structure.
 
-**Request:** "Create a `word-card-list` component that displays saved vocabulary words with a save button on each."
+**Request:** "Create a `user-profile-card` component that shows a user's public profile and lets the viewer bookmark them."
 
 **Internal workflow (not in output):**
-1. `GetAllComponents` → notice `word-card` exists.
-2. `GetComponents("word-card")` → it accepts a `word` prop and emits `save-word` events but does not handle them.
-3. Decision: build a wrapper that owns the list layout AND handles the save action; depend on `word-card`. Because the wrapper itself listens for `save-word`, the event stays in scope and rejection does not apply.
+1. `GetAllComponents` → no profile component exists; no bookmark control exists.
+2. No rejection conditions apply.
+3. `GetComponents("card")` → inspect neighbours for palette tokens.
+4. Classify: new data-display. `user-id` is the identity key; all display fields are fetched on mount. The bookmark action is a reusable control — call `CreateComponent` to build `bookmark-button` as a sub-component that owns the save interaction, then declare it as a dependency.
+5. `CreateComponent("bookmark-button", "A toggle button that saves or removes a bookmarked item. Accepts an item-id and item-type prop. Handles the save and remove interactions itself.")` → committed.
 
 **Output:**
 ```json
 {
-  "id": "word-card-list",
-  "shortDesc": "Vertical list of saved vocabulary words, each saveable to favourites.",
-  "role": "layout-wrapper",
+  "id": "user-profile-card",
+  "shortDesc": "Self-fetching card showing a user's public profile with a bookmark control.",
+  "role": "data-display",
   "props": [
     {
-      "name": "title",
+      "name": "user-id",
       "type": "string",
-      "required": false,
-      "description": "Heading shown above the list.",
-      "default": "Saved words"
+      "required": true,
+      "description": "ID of the user whose profile to load and display."
     }
   ],
-  "slots": [
-    {
-      "name": "default",
-      "description": "List items, expected to be word-card elements.",
-      "accepts": "<word-card> elements"
-    }
-  ],
+  "slots": [],
   "styling": {
-    "tailwindClasses": "flex flex-col gap-3 p-4 bg-slate-900 rounded-lg",
-    "palette": ["bg-slate-900", "text-emerald-400", "text-slate-100"],
-    "notes": "Matches word-card's dark palette; 12px gap between cards; full-width on mobile, max-w-md on md+."
+    "tailwindClasses": "bg-white rounded-xl shadow-sm p-6 max-w-sm",
+    "palette": ["bg-white", "text-slate-900", "text-slate-500", "bg-indigo-600", "text-white"],
+    "notes": "Clean card. Avatar top-left with name and handle beside it. Bio below. Bookmark button full-width at bottom."
   },
   "dependencies": [
     {
-      "id": "word-card",
-      "usage": "Rendered once per slot child; emits save-word events that this wrapper listens for."
+      "id": "bookmark-button",
+      "usage": "Rendered at the bottom of the card; receives the loaded userId as item-id and item-type=\"user\"."
     }
   ],
   "interactions": [
     {
-      "trigger": "save-word event bubbles up from a child word-card",
+      "trigger": "component mounts",
       "method": "POST",
-      "route": "/favorites/words",
-      "bodyShape": "{ \"wordId\": \"string\", \"outputFormat\": { \"ok\": \"boolean\", \"savedCount\": \"number\", \"related\": [{\"id\": \"string\", \"word\": \"string\"}] } }"
+      "route": "/users/profile",
+      "bodyShape": "{ \"userId\": \"string\", \"outputFormat\": { \"name\": \"string\", \"handle\": \"string\", \"bio\": \"string\", \"avatarUrl\": \"string\" } }"
     }
   ],
-  "accessibility": "Use a <ul> wrapper with role=list; ensure each child slot is a list item; the wrapper does not steal focus.",
-  "markupSketch": "<section class=\"flex flex-col gap-3 p-4 bg-slate-900 rounded-lg\"><h2 class=\"text-emerald-400\">{{title}}</h2><div class=\"flex flex-col gap-2\"><slot></slot></div></section>"
+  "markupSketch": "<article class=\"bg-white rounded-xl shadow-sm p-6 max-w-sm\"><div class=\"flex items-center gap-4 mb-4\"><img class=\"w-12 h-12 rounded-full bg-slate-200\" alt=\"{{name}}\" /><div><h2 class=\"text-lg font-semibold text-slate-900\">{{name}}</h2><p class=\"text-sm text-slate-500\">@{{handle}}</p></div></div><p class=\"text-slate-600 text-sm leading-relaxed mb-4\">{{bio}}</p><bookmark-button item-id=\"{{userId}}\" item-type=\"user\"></bookmark-button></article>"
 }
 ```
 </example>

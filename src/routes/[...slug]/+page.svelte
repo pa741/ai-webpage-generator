@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { marked, Tokenizer } from "marked";
   import { getFunctions, httpsCallable } from "firebase/functions";
+  import { watchComponents } from "$lib/component-watcher";
   let { data } = $props();
   let style = $state<string | undefined>(undefined);
   /*
@@ -36,6 +38,11 @@
     }
   });
   console.log("Data:", data);
+
+  onMount(() => {
+    const ids = data.componentScripts?.map((s) => s.id) ?? [];
+    return watchComponents(ids);
+  });
 </script>
 
 <svelte:head>

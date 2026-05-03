@@ -17,6 +17,7 @@ import { GenerateImageFromRoute, HandleAction } from '$lib/AI/PageGenerator';
 import { logServerSideEvent } from '$lib/server_analytics';
 import { db, collection, addDoc, serverTimestamp } from './lib/firebase';
 import { generateRequestId, logger, withRequestContext } from '$lib/logger';
+import { withPageMetrics } from '$lib/metrics';
 import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { getAuth } from 'firebase-admin/auth';
 import './lib/firebase_admin';
@@ -158,7 +159,7 @@ export const handle: Handle = async ({ event, resolve }) => {
                     return response;
                 }
 
-                const response = await resolve(event);
+                const response = await withPageMetrics(requestId, pathname, () => Promise.resolve(resolve(event)));
                 response.headers.set('Cache-Control', 'private, no-cache');
                 response.headers.set('vary', 'Cookie, Accept');
                 response.headers.set('X-Robots-Tag', 'noindex, nofollow');

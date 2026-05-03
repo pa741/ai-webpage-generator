@@ -29,3 +29,6 @@ firebase-export-*
 .claude/settings.local.json
 emulator-data_backuo/*
 emulator-data_backup2/*
+metrics/
+Generative Web App.md
+.claude/worktrees/nifty-driscoll-8c45e2

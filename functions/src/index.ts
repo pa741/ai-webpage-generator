@@ -473,7 +473,8 @@ function readOperatorPrompt(raw: unknown, fieldName: string): string {
 }
 
 export const initializeComponents = onCall({
-    region: "europe-southwest1"
+    region: "europe-southwest1",
+    timeoutSeconds: 5400
 }, async (request) => {
     const requestId = (request.rawRequest.headers["x-request-id"] as string | undefined) ?? generateRequestId();
     return withRequestContext(requestId, { fn: "initializeComponents" }, async () => {
