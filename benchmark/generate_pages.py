@@ -49,6 +49,9 @@ def reset_components(functions_url: str) -> None:
     url = f"{functions_url.rstrip('/')}/resetComponents"
     resp = requests.post(url, json={"data": {"confirm": "RESET"}}, timeout=60)
     resp.raise_for_status()
+    body = resp.json()
+    if "error" in body:
+        raise RuntimeError(f"resetComponents returned error: {body['error']}")
 
 
 def process_task(
