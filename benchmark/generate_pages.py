@@ -52,12 +52,14 @@ def reset_components(functions_url: str, id_token: str) -> None:
 
 def fetch_page(app_url: str, slug: str, id_token: str) -> tuple[str, float]:
     url = f"{app_url.rstrip('/')}/{slug}"
+    headers = {"User-Agent": "benchmark/1.0"}
+    if id_token:
+        # Sent as cookie (hooks.server.ts reads authToken cookie for user identity)
+        # and as Authorization header (MCP client fallback in PageGenerator.ts)
+        headers["Authorization"] = f"Bearer {id_token}"
     t0 = time.monotonic()
-    resp = requests.get(
-        url,
-        headers={"Authorization": f"Bearer {id_token}"},
-        timeout=120,
-    )
+    cookies = {"authToken": id_token} if id_token else {}
+    resp = requests.get(url, headers=headers, cookies=cookies, timeout=120)
     elapsed = time.monotonic() - t0
     resp.raise_for_status()
     return resp.text, elapsed
@@ -92,8 +94,11 @@ def main():
     args = parser.parse_args()
 
     id_token = os.environ.get("BENCHMARK_ID_TOKEN", "").strip()
-    if not id_token:
-        sys.exit("BENCHMARK_ID_TOKEN env var is required")
+    if not id_token and not args.skip_reset:
+        sys.exit(
+            "BENCHMARK_ID_TOKEN env var is required for component reset. "
+            "Use --skip-reset to bypass (dev/emulator mode only)."
+        )
 
     functions_url = args.functions_url
     if not args.skip_reset and not functions_url:
